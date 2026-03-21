@@ -78,8 +78,7 @@ import win32com.client
 
 SERVICE_VERSION = "0.3"
 
-logging.info("MSB Label Polling Service v%s started.", SERVICE_VERSION)
-print(f"MSB Label Polling Service v{SERVICE_VERSION} started.")
+
 
 
 # ============================================================
@@ -152,10 +151,15 @@ CONTAINER_OBJ_LABEL = "objContainerLabel"
 CONTAINER_OBJ_QR = "objQr"
 
 logging.basicConfig(
-    filename=LOG_FILE,
+    filename=str(LOG_FILE),
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
+    force=True,
 )
+logging.info("MSB Label Polling Service v%s started.", SERVICE_VERSION)
+print(f"MSB Label Polling Service v{SERVICE_VERSION} started.")
+logging.info("Logging initialized. Log file: %s", LOG_FILE)
+print(f"Logging initialized. Log file: {LOG_FILE}")
 
 
 # ============================================================
