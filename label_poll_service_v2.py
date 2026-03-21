@@ -53,6 +53,34 @@ import win32com.client
 # Date: 2026-03-21
 # ============================================================
 
+# ============================================================
+# CHANGE LOG
+# ============================================================
+# 2026-03-21  — Greg Liebig
+#
+# v0.3  — Printer-safe batch creation
+#   • Added pending label checks before batch creation
+#   • Added printer preflight check BEFORE creating batches
+#   • Prevents endless batch creation when printer is empty,
+#     offline, paused, or otherwise not ready
+#   • Service now idles safely until printer becomes available
+#
+# v0.2  — b-PAC integration
+#   • Replaced P-touch Editor launch with direct b-PAC printing
+#   • Implemented batch printing via StartPrint / PrintOut loop
+#
+# v0.1  — Initial polling service
+#   • DB polling
+#   • Snapshot batch tables
+#   • CSV generation
+#
+# ============================================================
+
+SERVICE_VERSION = "0.3"
+
+logging.info("MSB Label Polling Service v%s started.", SERVICE_VERSION)
+print(f"MSB Label Polling Service v{SERVICE_VERSION} started.")
+
 
 # ============================================================
 # CONFIG LOADING
@@ -228,6 +256,86 @@ def startup_health_check() -> None:
     print("")
 
 # ============================================================
+# Printer preflight
+# ============================================================
+
+BPAC_STATUS_CODES = {
+    101: "No media",
+    102: "End of media",
+    50593795: "Printer offline",
+}
+
+def decode_bpac_code(code: int) -> str:
+    return BPAC_STATUS_CODES.get(code, f"Unknown code {code} (0x{code:08X})")
+
+
+def printer_preflight(template_path: Path) -> tuple[bool, str]:
+    """
+    Check whether the printer appears ready before creating a batch.
+
+    Returns:
+      (True, "OK")
+      (False, "reason")
+    """
+    try:
+        doc = create_bpac_document()
+
+        opened = doc.Open(str(template_path))
+        if not opened:
+            return False, f"Could not open template: {template_path}"
+
+        set_printer_ok = doc.SetPrinter(PRINTER_NAME, True)
+        if not set_printer_ok:
+            return False, f"Could not set printer '{PRINTER_NAME}'"
+
+        # Template media from LBX
+        try:
+            template_media = doc.GetMediaName()
+        except Exception as exc:
+            template_media = f"<error reading template media: {exc}>"
+
+        # Printer media from printer object
+        try:
+            printer_media = doc.Printer.GetMediaName()
+        except Exception as exc:
+            return False, f"Printer GetMediaName failed: {exc}"
+
+        # Media ID / error path
+        media_id = None
+        media_id_error = None
+        try:
+            media_id = doc.Printer.GetMediaId()
+        except Exception as exc:
+            media_id_error = str(exc)
+
+        # Close doc as best we can
+        try:
+            _ = doc.Close
+        except Exception:
+            pass
+
+        # Known failure cases
+        if media_id in (101, 102, 50593795):
+            return False, decode_bpac_code(media_id)
+
+        if not printer_media or str(printer_media).strip() == "":
+            return False, "Printer reports no media loaded"
+
+        # Optional media mismatch warning
+        # Do not hard-fail on mismatch yet unless you want to enforce it
+        if template_media and printer_media and str(template_media).strip() != str(printer_media).strip():
+            return False, f"Loaded media '{printer_media}' does not match template media '{template_media}'"
+
+        if media_id_error:
+            # If GetMediaId threw something but media name exists, log it as warning-level text
+            return True, f"OK (GetMediaId warning: {media_id_error})"
+
+        return True, f"OK (template_media={template_media}, printer_media={printer_media})"
+
+    except Exception as exc:
+        return False, f"Printer preflight exception: {exc}"
+    
+# ============================================================
 # LOGGING HELPERS
 # ============================================================
 
@@ -307,6 +415,19 @@ def wait_for_bpac_result(event_sink: BpacPrintEvents, timeout_seconds: int = 120
 # DATABASE HELPERS
 # ============================================================
 
+def pending_display_count(conn) -> int:
+    return int(query_value(
+        conn,
+        "SELECT COUNT(*) FROM ref.display WHERE print_label = true;",
+    ) or 0)
+
+
+def pending_container_count(conn) -> int:
+    return int(query_value(
+        conn,
+        "SELECT COUNT(*) FROM ref.container WHERE print_label = true;",
+    ) or 0)
+
 def db_connect():
     return psycopg2.connect(
         host=CONFIG["database"]["host"],
@@ -315,7 +436,6 @@ def db_connect():
         user=CONFIG["database"]["user"],
         password=CONFIG["database"]["password"],
     )
-
 
 def load_sql(filename: str) -> str:
     path = SQL_DIR / filename
@@ -815,6 +935,45 @@ def main() -> None:
             with db_connect() as conn:
                 conn.autocommit = False
 
+                # --------------------------------------------------
+                # Step 1: Check whether there is any work pending
+                # --------------------------------------------------
+                display_pending = pending_display_count(conn)
+                container_pending = pending_container_count(conn)
+
+                if display_pending == 0 and container_pending == 0:
+                    conn.rollback()
+                    clear_lock()
+                    time.sleep(POLL_SECONDS)
+                    continue
+
+                # --------------------------------------------------
+                # Step 2: Preflight printer BEFORE creating any batch
+                # This prevents endless batch creation when printer is
+                # empty, offline, paused, or otherwise not ready.
+                # --------------------------------------------------
+                preflight_template = (
+                    DISPLAY_TEMPLATE
+                    if display_pending > 0
+                    else CONTAINER_VERTICAL_TEMPLATE
+                )
+
+                preflight_ok, preflight_msg = printer_preflight(preflight_template)
+
+                if not preflight_ok:
+                    logging.error("Printer preflight failed: %s", preflight_msg)
+                    print(f"Printer preflight failed: {preflight_msg}")
+                    conn.rollback()
+                    clear_lock()
+                    time.sleep(POLL_SECONDS)
+                    continue
+
+                logging.info("Printer preflight passed: %s", preflight_msg)
+                print(f"Printer preflight passed: {preflight_msg}")
+
+                # --------------------------------------------------
+                # Step 3: Only create batches AFTER printer passes
+                # --------------------------------------------------
                 display_batch_id = create_display_batch(conn)
                 container_batch_id = create_container_batch(conn)
 
