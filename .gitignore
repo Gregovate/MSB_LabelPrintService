@@ -1,0 +1,26 @@
+# Secrets
+config.local.ini
+*.env
+
+# Logs
+logs/
+*.log
+
+# Runtime state
+state/
+
+# CSV working files (optional — keep if generated)
+csv/printed/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+
+# OS junk
+Thumbs.db
+.DS_Store
