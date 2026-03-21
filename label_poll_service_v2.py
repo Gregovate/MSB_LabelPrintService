@@ -88,7 +88,7 @@ print(f"MSB Label Polling Service v{SERVICE_VERSION} started.")
 
 def load_config() -> configparser.ConfigParser:
     config = configparser.ConfigParser()
-    config.read(Path(__file__).with_name("config.ini"))
+    config.read(Path(__file__).with_name("config.local.ini"))
     return config
 
 
@@ -123,7 +123,7 @@ CONTAINER_VERTICAL_CSV = Path(CONFIG["csv_files"]["container_vertical"])
 CONTAINER_HORIZONTAL_CSV = Path(CONFIG["csv_files"]["container_horizontal"])
 
 # Printer name used by b-PAC SetPrinter()
-# Add this to config.ini under [printer]:
+# Add this to config.local.ini under [printer]:
 # name = Brother PT-P950NW
 PRINTER_NAME = CONFIG.get("printer", "name", fallback="Brother PT-P950NW")
 
@@ -925,7 +925,8 @@ def main() -> None:
     startup_health_check()
 
     while True:
-        try:
+        try:.
+            logging.info("Poll tick — checking for pending labels.")
             if lock_exists():
                 time.sleep(POLL_SECONDS)
                 continue
@@ -940,8 +941,14 @@ def main() -> None:
                 # --------------------------------------------------
                 display_pending = pending_display_count(conn)
                 container_pending = pending_container_count(conn)
+                logging.info(
+                    "Pending labels — displays=%s containers=%s",
+                    display_pending,
+                    container_pending,
+                )
 
                 if display_pending == 0 and container_pending == 0:
+                    logging.info("No pending labels. Service idle.")
                     conn.rollback()
                     clear_lock()
                     time.sleep(POLL_SECONDS)
@@ -976,6 +983,11 @@ def main() -> None:
                 # --------------------------------------------------
                 display_batch_id = create_display_batch(conn)
                 container_batch_id = create_container_batch(conn)
+                logging.info(
+                    "Batch creation results — display_batch_id=%s container_batch_id=%s",
+                    display_batch_id,
+                    container_batch_id,
+                )
 
                 if not display_batch_id and not container_batch_id:
                     conn.rollback()
