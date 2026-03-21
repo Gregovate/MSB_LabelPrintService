@@ -156,10 +156,16 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     force=True,
 )
+
+# Force-create the log file so there is no guessing
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+LOG_FILE.touch(exist_ok=True)
+
 logging.info("MSB Label Polling Service v%s started.", SERVICE_VERSION)
+logging.info("Logging initialized. Log file: %s", LOG_FILE.resolve())
+
 print(f"MSB Label Polling Service v{SERVICE_VERSION} started.")
-logging.info("Logging initialized. Log file: %s", LOG_FILE)
-print(f"Logging initialized. Log file: {LOG_FILE}")
+print(f"Logging initialized. Log file: {LOG_FILE.resolve()}")
 
 
 # ============================================================
@@ -282,6 +288,7 @@ def printer_preflight(template_path: Path) -> tuple[bool, str]:
       (False, "reason")
     """
     try:
+        #doc, _ = create_bpac_document_with_events()
         doc = create_bpac_document()
 
         opened = doc.Open(str(template_path))
@@ -294,13 +301,13 @@ def printer_preflight(template_path: Path) -> tuple[bool, str]:
 
         # Template media from LBX
         try:
-            template_media = doc.GetMediaName()
+            template_media = doc.GetMediaName
         except Exception as exc:
             template_media = f"<error reading template media: {exc}>"
 
         # Printer media from printer object
         try:
-            printer_media = doc.Printer.GetMediaName()
+            printer_media = doc.Printer.GetMediaName
         except Exception as exc:
             return False, f"Printer GetMediaName failed: {exc}"
 
@@ -308,13 +315,13 @@ def printer_preflight(template_path: Path) -> tuple[bool, str]:
         media_id = None
         media_id_error = None
         try:
-            media_id = doc.Printer.GetMediaId()
+            media_id = doc.Printer.GetMediaId
         except Exception as exc:
             media_id_error = str(exc)
 
         # Close doc as best we can
         try:
-            _ = doc.Close
+            _ = doc.Close()
         except Exception:
             pass
 
@@ -591,6 +598,9 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> int:
 # ============================================================
 # b-PAC HELPERS
 # ============================================================
+def create_bpac_document():
+    return win32com.client.Dispatch("bpac.Document")
+
 
 def create_bpac_document_with_events():
     """
@@ -641,12 +651,12 @@ def log_media_status(doc, batch_log_path: Path) -> None:
     Log template media and currently loaded printer media.
     """
     try:
-        template_media = doc.GetMediaName()
+        template_media = doc.GetMediaName
     except Exception as exc:
         template_media = f"<error reading template media: {exc}>"
 
     try:
-        printer_media = doc.Printer.GetMediaName()
+        printer_media = doc.Printer.GetMediaName
     except Exception as exc:
         printer_media = f"<error reading printer media: {exc}>"
 
