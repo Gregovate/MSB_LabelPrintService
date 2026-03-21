@@ -925,7 +925,7 @@ def main() -> None:
     startup_health_check()
 
     while True:
-        try:.
+        try:
             logging.info("Poll tick — checking for pending labels.")
             if lock_exists():
                 time.sleep(POLL_SECONDS)
