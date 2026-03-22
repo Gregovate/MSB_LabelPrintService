@@ -93,8 +93,11 @@ These tables:
 ### 3. Label Polling Service
 
 
-label_poll_service_v3.py
+The service is started manually from the office workstation using:
 
+```powershell
+python label_poll_service_v3.py
+```
 
 Runs continuously on the office workstation.
 

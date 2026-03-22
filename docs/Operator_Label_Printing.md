@@ -26,6 +26,81 @@ Before printing:
 
 ---
 
+## ▶ Starting the Label Print Service
+
+The label printer will not print automatically unless the MSB Label Print Service is running on the office workstation. 
+
+Normall it will be. But, if labels are not printing, this is the first thing to check. Next will be checking the tape cartridge to make sure this is stock to print on and it's not empty.
+
+There will be a dedicated print sever setup in the near future. For now we must do this if it is not started.
+
+### Start Procedure
+
+1. Log into the office workstation.
+2. Open **Command Prompt**.
+3. Change to the root:
+
+```powershell
+cd C:\
+start_label_service
+```
+
+Expected Startup Output
+
+You should see a startup banner similar to this:
+
+```
+MSB Label Service — label_poll_service_v3.py
+Version 3.0
+Host    : MSB-Office-PC
+PID     : #####
+```
+Then:
+
+```
+Startup health check PASSED.
+Service READY — polling every 15 seconds.
+Press Ctrl+C to stop.
+```
+
+If you do not see this message, the service is not ready.
+
+⏹ Stopping the Label Print Service
+
+To stop the service safely:
+
+Click the red background command prompt window running the service
+
+```
+Press:
+Ctrl + C
+```
+
+This stops polling cleanly.
+
+✅ How to Confirm the Service Is Running
+
+The service is running correctly if:
+
+the PowerShell window remains open
+no startup errors are shown
+the log file is updating at:
+C:\MSB_LabelService\logs\label_service.log
+
+Typical healthy log messages include:
+
+Poll tick - checking for pending labels.
+No pending labels. Service idle.
+⚠ If the Service Is Not Running
+
+If labels are selected in Directus but nothing prints:
+
+check whether the service PowerShell window is open
+restart the service if needed
+verify printer is powered on and has tape installed
+
+
+
 ## 🖥️ Accessing Label Printing
 
 Use the Directus left navigation panel.
