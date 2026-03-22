@@ -1,6 +1,6 @@
 # ============================================================
 # MSB Label Polling Service Test Print
-# File: bpac_print_test_2.py
+# File: bpac_print_test2.py
 #
 # Purpose:
 #   Read the generated display label CSV file, open the Brother
@@ -29,23 +29,12 @@
 #
 # Author: Greg Liebig / Engineering Innovations, LLC
 # Date: 2026-03-21
-# ============================================================
-# ============================================================
-# MSB Label Polling Service Test Print
-# File: bpac_print_test2.py
-#
-# Purpose:
-#   Read the generated display label CSV file, open the Brother
-#   b-PAC label template, and print the full batch through the
-#   PT-P950NW using the b-PAC SDK.
-#
-# IMPORTANT:
-#   This is a TEST file only.
-#
-# Author: Greg Liebig / Engineering Innovations, LLC
-# Date: 2026-03-21
 # Updated to find callback messages
+# v0.1  — Initial standalone print test
+#   • Direct LBX + CSV print test
+#   • Plain b-PAC printing path
 # ============================================================
+
 
 from __future__ import annotations
 
@@ -55,6 +44,11 @@ import sys
 
 import win32com.client
 
+
+SCRIPT_NAME = Path(__file__).name
+SCRIPT_VERSION = "0.3"
+SCRIPT_DATE = "2026-03-21"
+SCRIPT_DESC = "Brother b-PAC Standalone Print Test"
 
 # ============================================================
 # CONFIGURATION
@@ -166,9 +160,10 @@ def log_printer_status(doc, label: str) -> None:
 # ============================================================
 
 def main() -> None:
-    print("============================================================")
-    print("MSB b-PAC Batch Print Test")
-    print("============================================================")
+    print("=" * 60)
+    print(f"{SCRIPT_NAME}  v{SCRIPT_VERSION}  ({SCRIPT_DATE})")
+    print(SCRIPT_DESC)
+    print("=" * 60)
     print(f"Template: {TEMPLATE_PATH}")
     print(f"CSV File: {CSV_PATH}")
     print(f"Printer : {PRINTER_NAME}")
@@ -206,6 +201,7 @@ def main() -> None:
     print("Template object check complete.")
 
     print("Starting print job...")
+    log_printer_status(doc, "BEFORE StartPrint")
     doc.StartPrint("", PRINT_FLAGS)
 
     for i, row in enumerate(rows, start=1):
@@ -228,11 +224,14 @@ def main() -> None:
 
     print("Ending print job and sending batch to printer...")
     try:
-        end_result = doc.EndPrint
-        print(f"EndPrint result: {end_result}")
+        print("Ending print job and sending batch to printer...")
+        try:
+            end_result = doc.EndPrint
+            print(f"EndPrint result: {end_result}")
+        except Exception as exc:
+            print(f"WARNING: EndPrint call raised exception: {exc}")
+
         log_printer_status(doc, "AFTER EndPrint")
-    except Exception as exc:
-        print(f"WARNING: EndPrint call raised exception: {exc}")
 
     print("Closing template...")
     try:
