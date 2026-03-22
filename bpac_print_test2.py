@@ -44,6 +44,7 @@
 #
 # Author: Greg Liebig / Engineering Innovations, LLC
 # Date: 2026-03-21
+# Updated to find callback messages
 # ============================================================
 
 from __future__ import annotations
@@ -130,6 +131,35 @@ def get_optional_object(doc, object_name: str):
         print(f"WARNING: Optional template object '{object_name}' was not found.")
     return obj
 
+def log_printer_status(doc, label: str) -> None:
+    print(f"--- {label} ---")
+
+    try:
+        template_media = doc.GetMediaName
+    except Exception as exc:
+        template_media = f"<template media read failed: {exc}>"
+
+    try:
+        printer_media = doc.Printer.GetMediaName
+    except Exception as exc:
+        printer_media = f"<printer media read failed: {exc}>"
+
+    try:
+        error_code = doc.Printer.ErrorCode
+    except Exception as exc:
+        error_code = f"<error code read failed: {exc}>"
+
+    try:
+        error_string = doc.Printer.ErrorString
+    except Exception as exc:
+        error_string = f"<error string read failed: {exc}>"
+
+    print(f"Template media : {template_media}")
+    print(f"Printer media  : {printer_media}")
+    print(f"ErrorCode      : {error_code}")
+    print(f"ErrorString    : {error_string}")
+    print("")
+
 
 # ============================================================
 # MAIN PRINT FUNCTION
@@ -164,6 +194,7 @@ def main() -> None:
     print(f"Setting printer: {PRINTER_NAME}")
     set_printer_ok = doc.SetPrinter(PRINTER_NAME, True)
     print(f"SetPrinter result: {set_printer_ok}")
+    log_printer_status(doc, "AFTER SetPrinter")
 
     if not set_printer_ok:
         raise RuntimeError("b-PAC could not set the printer.")
@@ -190,6 +221,7 @@ def main() -> None:
 
         result = doc.PrintOut(1, 0)
         print(f"  PrintOut result: {result}")
+        log_printer_status(doc, f"AFTER PrintOut row {i}")
 
         if not result:
             raise RuntimeError(f"PrintOut failed on row {i}")
@@ -198,6 +230,7 @@ def main() -> None:
     try:
         end_result = doc.EndPrint
         print(f"EndPrint result: {end_result}")
+        log_printer_status(doc, "AFTER EndPrint")
     except Exception as exc:
         print(f"WARNING: EndPrint call raised exception: {exc}")
 
