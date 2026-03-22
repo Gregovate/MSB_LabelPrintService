@@ -1,14 +1,3 @@
-"qr_url","container_label"
-"https://db.sheboyganlights.org/scan/CONT/27","C027"
-"https://db.sheboyganlights.org/scan/CONT/34","C034"
-"https://db.sheboyganlights.org/scan/CONT/42","C042"
-"https://db.sheboyganlights.org/scan/CONT/43","C043"
-"https://db.sheboyganlights.org/scan/CONT/52","C052"
-"https://db.sheboyganlights.org/scan/CONT/54","C054"
-"https://db.sheboyganlights.org/scan/CONT/99","C099"
-"https://db.sheboyganlights.org/scan/CONT/100","C100"
-"https://db.sheboyganlights.org/scan/CONT/131","C131"
-"https://db.sheboyganlights.org/scan/CONT/157","C157"
-"https://db.sheboyganlights.org/scan/CONT/159","C159"
-"https://db.sheboyganlights.org/scan/CONT/177","C177"
-"https://db.sheboyganlights.org/scan/CONT/181","C181"
+container_id,container_type_id,container_label,qr_url
+54,3,C054,https://db.sheboyganlights.org/scan/CONT/54
+70,2,C070,https://db.sheboyganlights.org/scan/CONT/70

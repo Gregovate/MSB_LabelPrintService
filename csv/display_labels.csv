@@ -1,2 +1,6 @@
 display_id,container_id,display_name,line1,line2,qr_url
-864,8,CH-WindowsAndDoor,CH-WindowsAndDoor,,https://db.sheboyganlights.org/scan/DISP/864
+897,25,SW-SantaDoor,SW-SantaDoor,,https://db.sheboyganlights.org/scan/DISP/897
+884,25,SW-SewingDoor-LH,SW-SewingDoor-LH,,https://db.sheboyganlights.org/scan/DISP/884
+887,149,SW-SHRSleigh-01,SW-SHRSleigh-01,,https://db.sheboyganlights.org/scan/DISP/887
+883,149,SW-SHRSleigh-02,SW-SHRSleigh-02,,https://db.sheboyganlights.org/scan/DISP/883
+889,149,SW-SHRSleigh-03,SW-SHRSleigh-03,,https://db.sheboyganlights.org/scan/DISP/889

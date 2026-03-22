@@ -41,7 +41,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 import sys
-
+import time
+import pythoncom
 import win32com.client
 
 
@@ -105,7 +106,17 @@ def load_rows_from_csv(csv_path: Path) -> list[dict[str, str]]:
 def create_bpac_document():
     """Create the Brother b-PAC COM document object."""
     return win32com.client.Dispatch("bpac.Document")
+printed_result = {
+    "called": False,
+    "status": None,
+    "value": None,
+}
 
+def printed_callback(status, value):
+    printed_result["called"] = True
+    printed_result["status"] = int(status)
+    printed_result["value"] = value
+    print(f"CALLBACK: status={status} value={value}")
 
 def get_required_object(doc, object_name: str):
     """Get a required template object."""
@@ -194,6 +205,11 @@ def main() -> None:
     if not set_printer_ok:
         raise RuntimeError("b-PAC could not set the printer.")
 
+    # print("Setting printed callback...")
+    # doc.SetPrintedCallback(printed_callback)
+
+    print("Resolving template objects...")
+
     print("Resolving template objects...")
     obj_line1 = get_required_object(doc, OBJ_LINE1)
     obj_qr = get_required_object(doc, OBJ_QR)
@@ -222,19 +238,24 @@ def main() -> None:
         if not result:
             raise RuntimeError(f"PrintOut failed on row {i}")
 
-    print("Ending print job and sending batch to printer...")
+    print("Waiting up to 30 seconds for printed callback...")
+
+    deadline = time.time() + 30
+    while time.time() < deadline and not printed_result["called"]:
+        pythoncom.PumpWaitingMessages()
+        time.sleep(0.1)
+
+    print(f"Final callback state: {printed_result}")
+
     try:
-        print("Ending print job and sending batch to printer...")
-        try:
-            end_result = doc.EndPrint
-            print(f"EndPrint result: {end_result}")
-        except Exception as exc:
-            print(f"WARNING: EndPrint call raised exception: {exc}")
-
-        log_printer_status(doc, "AFTER EndPrint")
-
+        print(f"Printer ErrorCode : {doc.Printer.ErrorCode}")
     except Exception as exc:
-        print(f"WARNING: EndPrint block failed: {exc}")
+        print(f"Printer ErrorCode read failed: {exc}")
+
+    try:
+        print(f"Printer ErrorString: {doc.Printer.ErrorString}")
+    except Exception as exc:
+        print(f"Printer ErrorString read failed: {exc}")
 
     print("Closing template...")
     try:
