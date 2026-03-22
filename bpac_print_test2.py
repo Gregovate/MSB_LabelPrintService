@@ -233,6 +233,9 @@ def main() -> None:
 
         log_printer_status(doc, "AFTER EndPrint")
 
+    except Exception as exc:
+        print(f"WARNING: EndPrint block failed: {exc}")
+
     print("Closing template...")
     try:
         close_result = doc.Close
