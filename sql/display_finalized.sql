@@ -4,45 +4,34 @@
      Finalize a completed display print batch.
 
    Behavior:
-     1. Write one history row per display in the batch
-     2. Mark batch item rows printed
-     3. Clear ref.display.print_label only for displays in this batch
+     1. Mark batch item rows printed
+     2. Clear ref.display.print_label only for displays in this batch
+     3. Update cached print summary fields on ref.display
      4. Mark batch header COMPLETED
 
    Parameter:
      %(batch_id)s
 
-   Author: Greg Liebig / Engineering Innovations, LLC
-   Date: 2026-03-21
-   ====================================================================== */
+   ----------------------------------------------------------------------
+   CHANGE LOG
+   ----------------------------------------------------------------------
+   2026-03-22 — Greg Liebig / Engineering Innovations, LLC
+     • REMOVED legacy history insert into ops.display_label_print
+       (eliminates redundant data storage)
+     • Batch + Batch_Item tables are now the single source of truth
+     • ADDED cached field updates on ref.display:
+         - label_print_count_cached
+         - label_print_last_at_cached
+     • Ensures Directus bookmarks show counts/dates without joins
+     • Prevents polling service from writing to legacy tables
 
-INSERT INTO ops.display_label_print (
-    display_id,
-    printed_at,
-    printed_by_person_id,
-    printed_by_text,
-    print_method,
-    label_qty,
-    qr_url,
-    line1,
-    line2,
-    notes
-)
-SELECT
-    i.display_id,
-    now(),
-    b.started_by_person_id,
-    b.started_by_text,
-    'POLLING_SERVICE',
-    1,
-    i.qr_url,
-    i.line1,
-    i.line2,
-    'Printed from display batch ' || b.display_label_batch_id
-FROM ops.display_label_batch_item i
-JOIN ops.display_label_batch b
-  ON b.display_label_batch_id = i.display_label_batch_id
-WHERE i.display_label_batch_id = %(batch_id)s;
+   2026-03-21 — Greg Liebig / Engineering Innovations, LLC
+     • Initial polling service batch finalization logic
+     • Included legacy history insert (now removed)
+
+   ----------------------------------------------------------------------
+
+   ====================================================================== */
 
 UPDATE ops.display_label_batch_item
 SET printed_flag = true,
@@ -62,3 +51,23 @@ UPDATE ops.display_label_batch
 SET status = 'COMPLETED',
     batch_completed_at = now()
 WHERE display_label_batch_id = %(batch_id)s;
+
+UPDATE ref.display d
+SET
+    label_print_count_cached = d.label_print_count_cached + x.print_count,
+    label_print_last_at_cached = GREATEST(
+        COALESCE(d.label_print_last_at_cached, '1900-01-01'::timestamptz),
+        x.last_printed_at
+    )
+FROM (
+    SELECT
+        i.display_id,
+        COUNT(*)::integer AS print_count,
+        MAX(b.batch_completed_at) AS last_printed_at
+    FROM ops.display_label_batch_item i
+    JOIN ops.display_label_batch b
+      ON b.display_label_batch_id = i.display_label_batch_id
+    WHERE i.display_label_batch_id = %(batch_id)s
+    GROUP BY i.display_id
+) x
+WHERE d.display_id = x.display_id;
