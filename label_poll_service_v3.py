@@ -65,7 +65,27 @@ import os
 # ============================================================
 # CHANGE LOG
 # ============================================================
-# 2026-03-21  — Greg Liebig
+## 2026-03-26 — v3.1
+#   • FIX: Prevent endless batch retry loop after failure
+#       - Added failed-batch guard logic in main polling loop
+#       - Prevents repeated batch creation when printer fails mid-run
+#
+#   • FIX: Resolved function/variable shadowing bug
+#       - Renamed failed batch helper functions to avoid UnboundLocalError
+#
+#   • IMPROVEMENT: Added spooler status decoding in logs
+#       - Logs now include human-readable job state (PRINTING, SPOOLING, etc.)
+#       - Improves troubleshooting of printer issues (e.g., out of tape)
+#
+#   • IMPROVEMENT: Increased spooler timeout for real-world printing
+#       - Display jobs allowed more time to complete
+#
+#   • BEHAVIOR CHANGE:
+#       - System now blocks automatic retry after failed batch
+#       - Requires operator intervention instead of silent reprocessing
+#
+# ------------------------------------------------------------
+#  2026-03-21  — Greg Liebig
 #
 # v3.0  — Queue-verified printing
 #   • Removed broken b-PAC callback/event sink handling
@@ -94,7 +114,7 @@ import os
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "3.0"
+SERVICE_VERSION = "3.1"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -175,6 +195,28 @@ PRINTER_NAME = CONFIG.get("printer", "name", fallback="Brother PT-P950NW")
 #   full cut.
 # ------------------------------------------------------------
 PRINT_FLAGS = 0x200 | 0x400 | 0x04000000
+
+# ------------------------------------------------------------
+# Windows Print Spooler Status
+# ------------------------------------------------------------
+def decode_spooler_status(status: int) -> str:
+    flags = {
+        0x0001: "PAUSED",
+        0x0002: "ERROR",
+        0x0004: "DELETING",
+        0x0008: "SPOOLING",
+        0x0010: "PRINTING",
+        0x0020: "OFFLINE",
+        0x0040: "PAPEROUT",
+        0x0080: "PRINTED",
+        0x0100: "DELETED",
+        0x0200: "BLOCKED",
+        0x0400: "USER_INTERVENTION",
+        0x0800: "RESTART",
+    }
+
+    active = [name for bit, name in flags.items() if status & bit]
+    return ", ".join(active) if active else f"UNKNOWN({status})"
 
 # ------------------------------------------------------------
 # Template object names
@@ -665,18 +707,22 @@ def get_print_jobs(printer_name: str) -> list[dict[str, Any]]:
         if handle is not None:
             win32print.ClosePrinter(handle)
 
-
+# 26-03-26 gal
 def summarize_print_jobs(jobs: list[dict[str, Any]]) -> str:
     if not jobs:
         return "<empty>"
 
     parts: list[str] = []
     for job in jobs:
+        status = job.get("Status", 0)
+        decoded = decode_spooler_status(status)
+
         parts.append(
             f"JobId={job.get('JobId')} "
             f"Document='{job.get('pDocument')}' "
-            f"Status={job.get('Status')}"
+            f"Status={status} ({decoded})"
         )
+
     return "; ".join(parts)
 
 
@@ -915,7 +961,7 @@ def print_container_batch(
     )
 
 # ============================================================
-# FAILURE HANDLING
+# FAILURE HANDLING HELPERS
 # ============================================================
 
 def mark_display_batch_failed(conn, batch_id: int, reason: str) -> None:
@@ -943,27 +989,50 @@ def mark_container_batch_failed(conn, batch_id: int, reason: str) -> None:
         {"batch_id": batch_id, "reason": reason[:1000]},
     )
 
-def failed_display_batch_id(conn):
+# 03-26-26 not to duplicate failed batches
+def get_failed_display_batch_id(conn):
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT display_label_batch_id
-            FROM ops.display_label_batch
-            WHERE status = 'FAILED'
-            ORDER BY display_label_batch_id DESC
-            LIMIT 1
+            WITH latest_failed AS (
+                SELECT display_label_batch_id
+                FROM ops.display_label_batch
+                WHERE status = 'FAILED'
+                ORDER BY display_label_batch_id DESC
+                LIMIT 1
+            ),
+            latest_completed AS (
+                SELECT COALESCE(MAX(display_label_batch_id), 0) AS completed_batch_id
+                FROM ops.display_label_batch
+                WHERE status = 'COMPLETED'
+            )
+            SELECT f.display_label_batch_id
+            FROM latest_failed f
+            CROSS JOIN latest_completed c
+            WHERE f.display_label_batch_id > c.completed_batch_id;
         """)
         row = cur.fetchone()
         return row[0] if row else None
 
 
-def failed_container_batch_id(conn):
+def get_failed_container_batch_id(conn):
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT container_label_batch_id
-            FROM ops.container_label_batch
-            WHERE status = 'FAILED'
-            ORDER BY container_label_batch_id DESC
-            LIMIT 1
+            WITH latest_failed AS (
+                SELECT container_label_batch_id
+                FROM ops.container_label_batch
+                WHERE status = 'FAILED'
+                ORDER BY container_label_batch_id DESC
+                LIMIT 1
+            ),
+            latest_completed AS (
+                SELECT COALESCE(MAX(container_label_batch_id), 0) AS completed_batch_id
+                FROM ops.container_label_batch
+                WHERE status = 'COMPLETED'
+            )
+            SELECT f.container_label_batch_id
+            FROM latest_failed f
+            CROSS JOIN latest_completed c
+            WHERE f.container_label_batch_id > c.completed_batch_id;
         """)
         row = cur.fetchone()
         return row[0] if row else None
@@ -1081,18 +1150,19 @@ def main() -> None:
                 # --------------------------------------------------
                 # Step 1b: Block retry if FAILED batch exists
                 # --------------------------------------------------
-                failed_display_batch_id = failed_display_batch_id(conn)
-                failed_container_batch_id = failed_container_batch_id(conn)
+                failed_display_batch_id = get_failed_display_batch_id(conn)
+                failed_container_batch_id = get_failed_container_batch_id(conn)
 
                 if failed_display_batch_id or failed_container_batch_id:
                     logging.error(
-                        "FAILED batch exists — blocking retry. display_batch_id=%s container_batch_id=%s",
+                        "FAILED batch exists - blocking retry. display_batch_id=%s container_batch_id=%s",
                         failed_display_batch_id,
                         failed_container_batch_id,
                     )
                     print(
-                        f"FAILED batch exists — manual intervention required. "
-                        f"display_batch_id={failed_display_batch_id} container_batch_id={failed_container_batch_id}"
+                        f"FAILED batch exists - manual intervention required. "
+                        f"display_batch_id={failed_display_batch_id} "
+                        f"container_batch_id={failed_container_batch_id}"
                     )
                     conn.rollback()
                     clear_lock()
