@@ -686,7 +686,7 @@ def wait_for_spooler_job_to_clear(
     expected_document: str,
     batch_log_path: Path,
     appear_timeout_seconds: int = 15,
-    clear_timeout_seconds: int = 30,
+    clear_timeout_seconds: int = 90,
     poll_interval_seconds: float = 1.0,
 ) -> None:
     expected_document_lower = expected_document.lower()
@@ -943,7 +943,30 @@ def mark_container_batch_failed(conn, batch_id: int, reason: str) -> None:
         {"batch_id": batch_id, "reason": reason[:1000]},
     )
 
+def failed_display_batch_id(conn):
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT display_label_batch_id
+            FROM ops.display_label_batch
+            WHERE status = 'FAILED'
+            ORDER BY display_label_batch_id DESC
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        return row[0] if row else None
 
+
+def failed_container_batch_id(conn):
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT container_label_batch_id
+            FROM ops.container_label_batch
+            WHERE status = 'FAILED'
+            ORDER BY container_label_batch_id DESC
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        return row[0] if row else None
 # ============================================================
 # MAIN BATCH PROCESSING
 # ============================================================
@@ -1049,6 +1072,27 @@ def main() -> None:
                         "Active PRINTING batch already exists. display_batch_id=%s container_batch_id=%s",
                         existing_display_batch_id,
                         existing_container_batch_id,
+                    )
+                    conn.rollback()
+                    clear_lock()
+                    time.sleep(POLL_SECONDS)
+                    continue
+
+                # --------------------------------------------------
+                # Step 1b: Block retry if FAILED batch exists
+                # --------------------------------------------------
+                failed_display_batch_id = failed_display_batch_id(conn)
+                failed_container_batch_id = failed_container_batch_id(conn)
+
+                if failed_display_batch_id or failed_container_batch_id:
+                    logging.error(
+                        "FAILED batch exists — blocking retry. display_batch_id=%s container_batch_id=%s",
+                        failed_display_batch_id,
+                        failed_container_batch_id,
+                    )
+                    print(
+                        f"FAILED batch exists — manual intervention required. "
+                        f"display_batch_id={failed_display_batch_id} container_batch_id={failed_container_batch_id}"
                     )
                     conn.rollback()
                     clear_lock()

@@ -1,6 +1,11 @@
 display_id,container_id,display_name,line1,line2,qr_url
-897,25,SW-SantaDoor,SW-SantaDoor,,https://db.sheboyganlights.org/scan/DISP/897
-884,25,SW-SewingDoor-LH,SW-SewingDoor-LH,,https://db.sheboyganlights.org/scan/DISP/884
-887,149,SW-SHRSleigh-01,SW-SHRSleigh-01,,https://db.sheboyganlights.org/scan/DISP/887
-883,149,SW-SHRSleigh-02,SW-SHRSleigh-02,,https://db.sheboyganlights.org/scan/DISP/883
-889,149,SW-SHRSleigh-03,SW-SHRSleigh-03,,https://db.sheboyganlights.org/scan/DISP/889
+720,14,FC-ArrowLeft-Dumb-01,FC-ArrowLeft-Dumb-01,,https://db.sheboyganlights.org/scan/DISP/720
+673,14,FC-ArrowLeft-Dumb-02,FC-ArrowLeft-Dumb-02,,https://db.sheboyganlights.org/scan/DISP/673
+742,14,FC-ArrowLeft-Dumb-03,FC-ArrowLeft-Dumb-03,,https://db.sheboyganlights.org/scan/DISP/742
+767,14,FC-ArrowRight-2CH-01,FC-ArrowRight-2CH-01,,https://db.sheboyganlights.org/scan/DISP/767
+649,14,FC-ArrowRight-2CH-02,FC-ArrowRight-2CH-02,,https://db.sheboyganlights.org/scan/DISP/649
+654,14,FC-ArrowRight-2CH-03,FC-ArrowRight-2CH-03,,https://db.sheboyganlights.org/scan/DISP/654
+679,14,FC-ArrowRight-2CH-04,FC-ArrowRight-2CH-04,,https://db.sheboyganlights.org/scan/DISP/679
+655,14,FC-ArrowRight-2CH-05,FC-ArrowRight-2CH-05,,https://db.sheboyganlights.org/scan/DISP/655
+733,14,FC-ArrowRight-2CH-06,FC-ArrowRight-2CH-06,,https://db.sheboyganlights.org/scan/DISP/733
+646,14,FC-ArrowRight-2CH-07,FC-ArrowRight-2CH-07,,https://db.sheboyganlights.org/scan/DISP/646
