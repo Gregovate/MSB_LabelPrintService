@@ -28,9 +28,9 @@ Before printing:
 
 ## ▶ Starting the Label Print Service
 
-The label printer will not print automatically unless the MSB Label Print Service is running on the office workstation. 
+>The label printer will not print automatically unless the MSB Label Print Service is running on the office workstation. 
 
-Normall it will be. But, if labels are not printing, this is the first thing to check. Next will be checking the tape cartridge to make sure this is stock to print on and it's not empty.
+Normally the print service will be running on the Office PC until a dedicated print server is built.But, if labels are not printing, this is the first thing to check. Next will be checking the tape cartridge to make sure this is stock to print on and it's not empty.
 
 There will be a dedicated print sever setup in the near future. For now we must do this if it is not started.
 
