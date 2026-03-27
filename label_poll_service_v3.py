@@ -65,6 +65,10 @@ import os
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-03-27 — v3.2
+#   • FIX: Fixed EM - in log file
+#       - Fixed Message when printer off-line
+#       - Confirmed fixes from 3/26 worked by moving code to print service PC
 ## 2026-03-26 — v3.1
 #   • FIX: Prevent endless batch retry loop after failure
 #       - Added failed-batch guard logic in main polling loop
@@ -114,7 +118,7 @@ import os
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "3.1"
+SERVICE_VERSION = "3.2"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -407,7 +411,7 @@ def printer_preflight(template_path: Path) -> tuple[bool, str]:
             return False, decode_bpac_code(media_id)
 
         if not printer_media or str(printer_media).strip() == "":
-            return False, "Printer reports no media loaded"
+            return False, "Printer not ready (no media, offline, or driver not responding)"
 
         # Optional media mismatch warning
         # Do not hard-fail on mismatch yet unless you want to enforce it
@@ -1212,7 +1216,7 @@ def main() -> None:
                 display_batch_id = create_display_batch(conn)
                 container_batch_id = create_container_batch(conn)
                 logging.info(
-                    "Batch creation results — display_batch_id=%s container_batch_id=%s",
+                    "Batch creation results - display_batch_id=%s container_batch_id=%s",
                     display_batch_id,
                     container_batch_id,
                 )
