@@ -1,14 +1,50 @@
-# MSB Label Printing — Operator Guide
+# MSB Label Print Service — Operator Guide
 
 **Author:** Greg Liebig / Engineering Innovations, LLC  
 **Date:** 2026-03-22  
 **System Version:** Label Service v3.x  
 
-This guide explains how to print display and container labels
-using the Directus interface.
+This guide explains how to operate and monitor the **Label Print Service**
+running on the dedicated print server.
 
-This is semi-production ready and any suggestions or problems
-you may run into, please let Greg know so they can be corrected.
+This is **NOT** a guide for printing labels in Directus.
+
+For printing physical lable instructions, see:
+
+👉 [Container & Display Label Printing SOP](https://github.com/Gregovate/MSB-Production-Database-Project/blob/main/Docs/02_Production_Database/02_Operational_SOPs/C_Container_and_Display_Label_Printing.md)
+
+---
+
+## 📌 Purpose of This Guide
+
+This document is used to:
+
+- Start the label print service if it is not running  
+- Verify the service is operating correctly  
+- Prevent duplicate print batches  
+- Recover the system if labels are not printing  
+
+---
+
+## 👤 Who Should Use This Guide
+
+This guide is intended for:
+
+- Managers  
+- Volunteers assisting with troubleshooting  
+- Anyone responsible for the print server  
+
+---
+
+## ⚠️ Important
+
+Most users **do not need this guide** during normal operation.
+
+Only use this if:
+
+- Labels are not printing  
+- The system appears unresponsive  
+- You are asked to check the print server  
 
 ---
 
@@ -169,152 +205,4 @@ If the service is running and printing still fails:
 Do NOT continue retrying
 
 
-## 🖥️ Accessing Label Printing
-
-Use the Directus left navigation panel.
-
-![Directus Menu](images/directus_menu.jpg)
-
-### Display Labels
-
-
-Display → Print Display Labels
-
-
-### Container Labels
-
-
-Container → Print Container Labels
-
-
----
-
-## 📋 Printing Multiple Labels at Once
-
-### Step 1 — Find the Items
-
-Use the search box at the top of the table.
-
-![Search](images/search_batch_edit.jpg)
-
-Example:
-
-- Type part of a container name
-- Filter by location
-- Narrow the list as needed
-
----
-
-### Step 2 — Select Items
-
-Use the checkbox column on the left side of the table.
-
-
-![Container Selection](images/container_selection.jpg)
-
-
-Select all items you want to print.
-
----
-
-### Step 3 — Open Batch Editor
-
-Click the pencil icon in the upper-right corner.
-
-![Search](images/search_batch_edit_pencil.jpg)
-
-This opens the batch editing panel.
-
----
-
-### Step 4 — Enable Print Label
-
-Toggle **Print Label → Enabled**
-
-
-![Batch Edit Toggle](images/container_print_toggle.jpg)
-
-
-Then save the changes.
-
----
-
-## 🖨️ What Happens Next
-
-After saving:
-
-1. Labels are queued automatically
-2. The print service creates a batch
-3. Labels print at the label printer
-4. The Print Label flag resets automatically after completion
-
-No further action is required.
-
----
-
-## ❗ If Printing Does Not Start
-
-Check the following:
-
-- Printer power
-- Network connection
-- Tape installed
-- Correct tape width
-- Printer not paused or offline
-
-If problems persist, notify system administrator.
-
----
-
-## ❗ If Tape Runs Out During Printing
-
-Symptoms:
-
-- Printer stops feeding tape
-- Labels may be incomplete
-- System may still mark batch complete
-
-Action:
-
-Note: This section is not tested as of 3/22/26-GAL
-
-1. Load a new cartridge
-2. Re-select labels that did not print
-3. Enable **Print Label** again
-4. Save to reprint
-
----
-
-## 📦 Container Labels vs Display Labels
-
-### Display Labels
-
-- One label per display
-- Typically printed in batches
-
-### Container Labels
-
-- Two labels printed per container
-- Used for physical storage identification
-
----
-
-## 📌 Best Practices
-
-✔ Print labels in manageable batches  
-✔ Verify output before removing items  
-✔ Keep spare cartridges nearby  
-✔ Do not power off printer during printing  
-
----
-
-## 🆘 Support
-
-Contact the MSB production database administrator
-if printing repeatedly fails or produces incorrect labels.
-
----
-
-## 🔄 Revision History
-
-- Initial operator guide for Label Service v3
+- Initial operator guide for Label Service v3.x

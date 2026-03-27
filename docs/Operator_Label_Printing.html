@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Operator_Label_Printing.md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<h1 id="msb-label-printing--operator-guide">MSB Label Printing — Operator Guide</h1>
+<p><strong>Author:</strong> Greg Liebig / Engineering Innovations, LLC<br>
+<strong>Date:</strong> 2026-03-22<br>
+<strong>System Version:</strong> Label Service v3.x</p>
+<p>This guide explains how to print display and container labels
+using the Directus interface.</p>
+<p>This is semi-production ready and any suggestions or problems
+you may run into, please let Greg know so they can be corrected.</p>
+<hr>
+<h2 id="%E2%9A%A0%EF%B8%8F-important-safety-notes">⚠️ IMPORTANT SAFETY NOTES</h2>
+<h3 id="tape-must-be-installed">Tape Must Be Installed</h3>
+<p>The system cannot reliably detect an empty tape cartridge.</p>
+<p>Before printing:</p>
+<p>✔ Verify tape cartridge is installed<br>
+✔ Verify tape width matches template (1.4&quot;)<br>
+✔ Verify printer is powered on and online</p>
+<hr>
+<h2 id="%E2%96%B6-starting-the-label-print-service-print-server">▶ Starting the Label Print Service (Print Server)</h2>
+<blockquote>
+<p>The label printing system runs on a <strong>dedicated print server machine</strong>.
+Labels will NOT print unless this service is running.</p>
+</blockquote>
+<hr>
+<h3 id="%F0%9F%96%A5-where-this-runs">🖥 Where This Runs</h3>
+<p>The service runs on the <strong>Label Print Server</strong> (separate machine).</p>
+<p>This allows labels to be queued to print from any authenticated device at any time.</p>
+<hr>
+<h2 id="%E2%9A%A0-critical-rule--read-this-first">⚠ CRITICAL RULE — READ THIS FIRST</h2>
+<p>🚫 <strong>DO NOT click &quot;Print&quot; multiple times in Directus</strong></p>
+<p>If nothing prints immediately:</p>
+<p>👉 <strong>STOP and check the service first</strong></p>
+<p>The system runs on a polling cycle and may take a few seconds to respond.</p>
+<p>Repeated clicks will create <strong>duplicate batches</strong> and waste label tape.</p>
+<hr>
+<h2 id="%E2%96%B6-when-you-should-start-the-service">▶ When You Should Start the Service</h2>
+<p>Only start the service if:</p>
+<p>✔ Labels are not printing<br>
+✔ The Blue service window is NOT open or in the task bar.</p>
+<p>If the service is already running → DO NOT restart it</p>
+<hr>
+<h2 id="%E2%96%B6-start-procedure">▶ Start Procedure</h2>
+<ol>
+<li>Go to the <strong>Label Print Server</strong></li>
+<li>Log in if needed</li>
+<li>On the desktop, double-click:</li>
+</ol>
+<p>👉 <strong>Start Label Service</strong> icon</p>
+<hr>
+<h3 id="%F0%9F%9F%A6-expected-result-important">🟦 Expected Result (IMPORTANT)</h3>
+<p>A window will open with:</p>
+<p>✔ Blue background<br>
+✔ Yellow text<br>
+✔ Command-style appearance</p>
+<p>This is the <strong>Label Print Service window</strong></p>
+<hr>
+<h3 id="%E2%9C%94-service-ready-state">✔ Service Ready State</h3>
+<p>Within a few seconds, you should see:</p>
+<blockquote>
+<p>Startup health check PASSED.</p>
+</blockquote>
+<blockquote>
+<p>Service READY — polling every 15 seconds.</p>
+</blockquote>
+<p>If you see this, the system is ready.</p>
+<hr>
+<h2 id="%E2%9B%94-important--do-not-close-this-window">⛔ IMPORTANT — Do NOT Close This Window</h2>
+<p>⚠ This window must remain open at all times</p>
+<p>🚫 <strong>DO NOT click the X (this will STOP the service)</strong><br>
+✔ Use the <strong>_ (minimize)</strong> button instead</p>
+<p>If this window is closed:</p>
+<p>❌ Label printing will STOP<br>
+❌ The system will NOT recover automatically</p>
+<hr>
+<h2 id="%F0%9F%8C%90-required-browser-tabs">🌐 Required Browser Tabs</h2>
+<p>Open Google Chrome and make sure these are available:</p>
+<ul>
+<li>https://my.sheboyganlights.org</li>
+<li>https://db.sheboyganlights.org</li>
+</ul>
+<hr>
+<h2 id="%E2%9C%85-how-to-confirm-the-system-is-working">✅ How to Confirm the System Is Working</h2>
+<p>Before reprinting anything, check:</p>
+<p>✔ The blue/yellow service window is open<br>
+✔ No error messages are shown<br>
+✔ The system shows polling messages</p>
+<hr>
+<h2 id="%E2%9A%A0-if-labels-did-not-print">⚠ If Labels Did NOT Print</h2>
+<p>Follow this EXACT order:</p>
+<ol>
+<li>
+<p><strong>Wait 10–15 seconds</strong></p>
+<ul>
+<li>The system may still be processing</li>
+</ul>
+</li>
+<li>
+<p><strong>Check the service window</strong></p>
+<ul>
+<li>Not open → Start it</li>
+<li>Shows errors → STOP and report</li>
+</ul>
+</li>
+<li>
+<p><strong>ONLY AFTER VERIFYING ABOVE</strong></p>
+<ul>
+<li>Retry the print ONCE</li>
+</ul>
+</li>
+</ol>
+<p>🚫 Do NOT repeatedly click print</p>
+<hr>
+<h2 id="%E2%8F%B9-stopping-the-label-print-service-only-if-directed">⏹ Stopping the Label Print Service (Only If Directed)</h2>
+<ol>
+<li>Click the blue service window</li>
+<li>Press:</li>
+</ol>
+<blockquote>
+<p>Ctrl + C</p>
+</blockquote>
+<hr>
+<h2 id="%F0%9F%9A%A8-if-there-is-a-problem">🚨 If There Is a Problem</h2>
+<p>If the service is running and printing still fails:</p>
+<p>👉 Contact Greg</p>
+<p>Do NOT continue retrying</p>
+<h2 id="%F0%9F%96%A5%EF%B8%8F-accessing-label-printing">🖥️ Accessing Label Printing</h2>
+<p>Use the Directus left navigation panel.</p>
+<p><img src="images/directus_menu.jpg" alt="Directus Menu"></p>
+<h3 id="display-labels">Display Labels</h3>
+<p>Display → Print Display Labels</p>
+<h3 id="container-labels">Container Labels</h3>
+<p>Container → Print Container Labels</p>
+<hr>
+<h2 id="%F0%9F%93%8B-printing-multiple-labels-at-once">📋 Printing Multiple Labels at Once</h2>
+<h3 id="step-1--find-the-items">Step 1 — Find the Items</h3>
+<p>Use the search box at the top of the table.</p>
+<p><img src="images/search_batch_edit.jpg" alt="Search"></p>
+<p>Example:</p>
+<ul>
+<li>Type part of a container name</li>
+<li>Filter by location</li>
+<li>Narrow the list as needed</li>
+</ul>
+<hr>
+<h3 id="step-2--select-items">Step 2 — Select Items</h3>
+<p>Use the checkbox column on the left side of the table.</p>
+<p><img src="images/container_selection.jpg" alt="Container Selection"></p>
+<p>Select all items you want to print.</p>
+<hr>
+<h3 id="step-3--open-batch-editor">Step 3 — Open Batch Editor</h3>
+<p>Click the pencil icon in the upper-right corner.</p>
+<p><img src="images/search_batch_edit_pencil.jpg" alt="Search"></p>
+<p>This opens the batch editing panel.</p>
+<hr>
+<h3 id="step-4--enable-print-label">Step 4 — Enable Print Label</h3>
+<p>Toggle <strong>Print Label → Enabled</strong></p>
+<p><img src="images/container_print_toggle.jpg" alt="Batch Edit Toggle"></p>
+<p>Then save the changes.</p>
+<hr>
+<h2 id="%F0%9F%96%A8%EF%B8%8F-what-happens-next">🖨️ What Happens Next</h2>
+<p>After saving:</p>
+<ol>
+<li>Labels are queued automatically</li>
+<li>The print service creates a batch</li>
+<li>Labels print at the label printer</li>
+<li>The Print Label flag resets automatically after completion</li>
+</ol>
+<p>No further action is required.</p>
+<hr>
+<h2 id="%E2%9D%97-if-printing-does-not-start">❗ If Printing Does Not Start</h2>
+<p>Check the following:</p>
+<ul>
+<li>Printer power</li>
+<li>Network connection</li>
+<li>Tape installed</li>
+<li>Correct tape width</li>
+<li>Printer not paused or offline</li>
+</ul>
+<p>If problems persist, notify system administrator.</p>
+<hr>
+<h2 id="%E2%9D%97-if-tape-runs-out-during-printing">❗ If Tape Runs Out During Printing</h2>
+<p>Symptoms:</p>
+<ul>
+<li>Printer stops feeding tape</li>
+<li>Labels may be incomplete</li>
+<li>System may still mark batch complete</li>
+</ul>
+<p>Action:</p>
+<p>Note: This section is not tested as of 3/22/26-GAL</p>
+<ol>
+<li>Load a new cartridge</li>
+<li>Re-select labels that did not print</li>
+<li>Enable <strong>Print Label</strong> again</li>
+<li>Save to reprint</li>
+</ol>
+<hr>
+<h2 id="%F0%9F%93%A6-container-labels-vs-display-labels">📦 Container Labels vs Display Labels</h2>
+<h3 id="display-labels">Display Labels</h3>
+<ul>
+<li>One label per display</li>
+<li>Typically printed in batches</li>
+</ul>
+<h3 id="container-labels">Container Labels</h3>
+<ul>
+<li>Two labels printed per container</li>
+<li>Used for physical storage identification</li>
+</ul>
+<hr>
+<h2 id="%F0%9F%93%8C-best-practices">📌 Best Practices</h2>
+<p>✔ Print labels in manageable batches<br>
+✔ Verify output before removing items<br>
+✔ Keep spare cartridges nearby<br>
+✔ Do not power off printer during printing</p>
+<hr>
+<h2 id="%F0%9F%86%98-support">🆘 Support</h2>
+<p>Contact the MSB production database administrator
+if printing repeatedly fails or produces incorrect labels.</p>
+<hr>
+<h2 id="%F0%9F%94%84-revision-history">🔄 Revision History</h2>
+<ul>
+<li>Initial operator guide for Label Service v3</li>
+</ul>
+
+</body>
+</html>
