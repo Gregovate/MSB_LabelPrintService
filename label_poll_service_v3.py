@@ -65,10 +65,8 @@ import os
 # ============================================================
 # CHANGE LOG
 # ============================================================
-## 2026-03-27 — v3.2
-#   • FIX: Fixed EM - in log file
-#       - Fixed Message when printer off-line
-#       - Confirmed fixes from 3/26 worked by moving code to print service PC
+
+
 ## 2026-03-26 — v3.1
 #   • FIX: Prevent endless batch retry loop after failure
 #       - Added failed-batch guard logic in main polling loop

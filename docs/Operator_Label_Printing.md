@@ -26,79 +26,147 @@ Before printing:
 
 ---
 
-## ▶ Starting the Label Print Service
+## ▶ Starting the Label Print Service (Print Server)
 
->The label printer will not print automatically unless the MSB Label Print Service is running on the office workstation. 
+>The label printing system runs on a **dedicated print server machine**.
+>Labels will NOT print unless this service is running.
 
-Normally the print service will be running on the Office PC until a dedicated print server is built.But, if labels are not printing, this is the first thing to check. Next will be checking the tape cartridge to make sure this is stock to print on and it's not empty.
+---
 
-There will be a dedicated print sever setup in the near future. For now we must do this if it is not started.
+### 🖥 Where This Runs
 
-### Start Procedure
+The service runs on the **Label Print Server** (separate machine).
 
-1. Log into the office workstation.
-2. Open **Command Prompt**.
-3. Change to the root:
+This allows labels to be queued to print from any authenticated device at any time.
 
-```powershell
-cd C:\
-start_label_service
-```
+---
 
-Expected Startup Output
+## ⚠ CRITICAL RULE — READ THIS FIRST
 
-You should see a startup banner similar to this:
+🚫 **DO NOT click "Print" multiple times in Directus**
 
-```
-MSB Label Service — label_poll_service_v3.py
-Version 3.0
-Host    : MSB-Office-PC
-PID     : #####
-```
-Then:
+If nothing prints immediately:
 
-```
-Startup health check PASSED.
-Service READY — polling every 15 seconds.
-Press Ctrl+C to stop.
-```
+👉 **STOP and check the service first**
 
-If you do not see this message, the service is not ready.
+The system runs on a polling cycle and may take a few seconds to respond.
 
-⏹ Stopping the Label Print Service
+Repeated clicks will create **duplicate batches** and waste label tape.
 
-To stop the service safely:
+---
 
-Click the red background command prompt window running the service
+## ▶ When You Should Start the Service
 
-```
-Press:
-Ctrl + C
-```
+Only start the service if:
 
-This stops polling cleanly.
+✔ Labels are not printing  
+✔ The Blue service window is NOT open or in the task bar.
 
-✅ How to Confirm the Service Is Running
+If the service is already running → DO NOT restart it
 
-The service is running correctly if:
+---
 
-the PowerShell window remains open
-no startup errors are shown
-the log file is updating at:
-C:\MSB_LabelService\logs\label_service.log
+## ▶ Start Procedure
 
-Typical healthy log messages include:
+1. Go to the **Label Print Server**
+2. Log in if needed
+3. On the desktop, double-click:
 
-Poll tick - checking for pending labels.
-No pending labels. Service idle.
-⚠ If the Service Is Not Running
+👉 **Start Label Service** icon
 
-If labels are selected in Directus but nothing prints:
+---
 
-check whether the service PowerShell window is open
-restart the service if needed
-verify printer is powered on and has tape installed
+### 🟦 Expected Result (IMPORTANT)
 
+A window will open with:
+
+✔ Blue background  
+✔ Yellow text  
+✔ Command-style appearance  
+
+This is the **Label Print Service window**
+
+---
+
+### ✔ Service Ready State
+
+Within a few seconds, you should see:
+
+>Startup health check PASSED.
+
+>Service READY — polling every 15 seconds.
+
+If you see this, the system is ready.
+
+---
+
+## ⛔ IMPORTANT — Do NOT Close This Window
+
+⚠ This window must remain open at all times
+
+🚫 **DO NOT click the X (this will STOP the service)**  
+✔ Use the **_ (minimize)** button instead  
+
+If this window is closed:
+
+❌ Label printing will STOP  
+❌ The system will NOT recover automatically  
+
+---
+
+## 🌐 Required Browser Tabs
+
+Open Google Chrome and make sure these are available:
+
+- https://my.sheboyganlights.org  
+- https://db.sheboyganlights.org  
+
+---
+
+## ✅ How to Confirm the System Is Working
+
+Before reprinting anything, check:
+
+✔ The blue/yellow service window is open  
+✔ No error messages are shown  
+✔ The system shows polling messages  
+
+---
+
+## ⚠ If Labels Did NOT Print
+
+Follow this EXACT order:
+
+1. **Wait 10–15 seconds**
+   - The system may still be processing
+
+2. **Check the service window**
+   - Not open → Start it
+   - Shows errors → STOP and report
+
+3. **ONLY AFTER VERIFYING ABOVE**
+   - Retry the print ONCE
+
+🚫 Do NOT repeatedly click print
+
+---
+
+## ⏹ Stopping the Label Print Service (Only If Directed)
+
+1. Click the blue service window  
+2. Press:
+
+>Ctrl + C
+
+---
+
+## 🚨 If There Is a Problem
+
+If the service is running and printing still fails:
+
+👉 Contact Greg
+
+Do NOT continue retrying
 
 
 ## 🖥️ Accessing Label Printing
