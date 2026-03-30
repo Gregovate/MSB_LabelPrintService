@@ -16,6 +16,12 @@
    ----------------------------------------------------------------------
    CHANGE LOG
    ----------------------------------------------------------------------
+2026-03-30 — Greg Liebig / Engineering Innovations, LLC
+  • ADDED cached actor field update on ref.container:
+      - label_print_last_by_cached_id
+  • Cached value is sourced from ops.container_label_batch.started_by_person_id
+  • Allows Directus to show last container print requestor without relying on relationship arrays
+
    2026-03-22 — Greg Liebig / Engineering Innovations, LLC
      • REMOVED legacy history insert into ops.container_label_print
        (eliminates redundant data storage)
@@ -65,12 +71,15 @@ SET
             COALESCE(c.label_print_last_at_cached,
                      '1900-01-01'::timestamptz),
             x.last_printed_at
-        )
+        ),
+
+    label_print_last_by_cached_id = x.started_by_person_id
 FROM (
     SELECT
         i.container_id,
         (COUNT(*) * 2)::integer AS print_count,
-        MAX(b.batch_completed_at) AS last_printed_at
+        MAX(b.batch_completed_at) AS last_printed_at,
+        MAX(b.started_by_person_id) AS started_by_person_id
     FROM ops.container_label_batch_item i
     JOIN ops.container_label_batch b
       ON b.container_label_batch_id = i.container_label_batch_id
