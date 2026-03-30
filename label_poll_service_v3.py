@@ -65,7 +65,24 @@ import os
 # ============================================================
 # CHANGE LOG
 # ============================================================
-
+## 2026-03-30 — v3.2
+#   • FEATURE: Capture true user actor for label batch creation
+#       - Batch started_by_person_id / started_by_text now sourced from
+#         ref.display / ref.container audit fields (updated_by*)
+#       - Replaces previous static service account assignment
+#
+#   • IMPROVEMENT: Batch audit accuracy
+#       - Batch now reflects the actual user who requested printing
+#       - Print history continues to reflect service execution identity
+#
+#   • SAFETY: Added fallback to service identity
+#       - If audit fields are missing or NULL, system falls back to
+#         configured service account to prevent batch failure
+#
+#   • DIAGNOSTICS: Added logging for batch actor selection
+#       - Logs include started_by_person_id and started_by_text
+#       - Warns when multiple actors detected in a single batch
+#       - Aligns batch actor tracking with ops audit model used throughout system
 
 ## 2026-03-26 — v3.1
 #   • FIX: Prevent endless batch retry loop after failure
@@ -514,6 +531,48 @@ def active_container_batch_id(conn) -> int | None:
     )
     return int(batch_id) if batch_id is not None else None
 
+#03/30/26 DISPLAY LABELS
+def get_display_batch_actor(conn) -> tuple[int | None, str | None]:
+    row = query_rows(
+        conn,
+        """
+        SELECT DISTINCT
+            updated_by_person_id,
+            updated_by
+        FROM ref.display
+        WHERE print_label = true
+        """
+    )
+
+    if not row:
+        return None, None
+
+    if len(row) > 1:
+        logging.warning("Multiple actors detected for display batch. Using first row.")
+
+    return row[0]["updated_by_person_id"], row[0]["updated_by"]
+
+#03/30/26 CONTAINER LABELS
+def get_container_batch_actor(conn) -> tuple[int | None, str | None]:
+    row = query_rows(
+        conn,
+        """
+        SELECT DISTINCT
+            updated_by_person_id,
+            updated_by
+        FROM ref.container
+        WHERE print_label = true
+        """
+    )
+
+    if not row:
+        return None, None
+
+    if len(row) > 1:
+        logging.warning("Multiple actors detected for container batch. Using first row.")
+
+    return row[0]["updated_by_person_id"], row[0]["updated_by"]
+
 # ============================================================
 # LOCK FILE HELPERS
 # ============================================================
@@ -544,6 +603,16 @@ def clear_lock() -> None:
 # ============================================================
 
 def create_display_batch(conn) -> int | None:
+    person_id, person_text = get_display_batch_actor(conn)
+
+    if person_id is None:
+        logging.warning(
+            "Display batch actor not found from ref.display audit fields. "
+            "Falling back to service identity."
+        )
+        person_id = STARTED_BY_PERSON_ID
+        person_text = STARTED_BY_TEXT
+
     sql = """
         INSERT INTO ops.display_label_batch (
             started_by_person_id,
@@ -558,8 +627,8 @@ def create_display_batch(conn) -> int | None:
         conn,
         sql,
         {
-            "person_id": STARTED_BY_PERSON_ID,
-            "person_text": STARTED_BY_TEXT,
+            "person_id": person_id,
+            "person_text": person_text,
         },
     )
 
@@ -579,10 +648,27 @@ def create_display_batch(conn) -> int | None:
         )
         return None
 
+    logging.info(
+        "Created display batch %s started_by_person_id=%s started_by_text=%s",
+        batch_id,
+        person_id,
+        person_text,
+    )
+
     return int(batch_id)
 
 
 def create_container_batch(conn) -> int | None:
+    person_id, person_text = get_container_batch_actor(conn)
+
+    if person_id is None:
+        logging.warning(
+            "Container batch actor not found from ref.container audit fields. "
+            "Falling back to service identity."
+        )
+        person_id = STARTED_BY_PERSON_ID
+        person_text = STARTED_BY_TEXT
+
     sql = """
         INSERT INTO ops.container_label_batch (
             started_by_person_id,
@@ -597,8 +683,8 @@ def create_container_batch(conn) -> int | None:
         conn,
         sql,
         {
-            "person_id": STARTED_BY_PERSON_ID,
-            "person_text": STARTED_BY_TEXT,
+            "person_id": person_id,
+            "person_text": person_text,
         },
     )
 
@@ -617,6 +703,13 @@ def create_container_batch(conn) -> int | None:
             {"batch_id": batch_id},
         )
         return None
+
+    logging.info(
+        "Created container batch %s started_by_person_id=%s started_by_text=%s",
+        batch_id,
+        person_id,
+        person_text,
+    )
 
     return int(batch_id)
 

@@ -1,5 +1,6 @@
 /* ======================================================================
    MSB Label Batch Tables
+   00_batch_tables.sql
    Purpose:
      Create snapshot batch tables used by the polling print service.
 
