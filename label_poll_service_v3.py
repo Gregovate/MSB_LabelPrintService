@@ -65,6 +65,16 @@ import os
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-04-16 — v3.4
+#   • IMPROVEMENT: Added rotating main service log
+#       - Replaced basicConfig-only file logging with RotatingFileHandler
+#       - Preserves console output while preventing unlimited growth of label_service.log
+#       - Keeps rolling log history for troubleshooting
+#
+#   • IMPROVEMENT: Added explicit pre-print batch commit logging
+#       - Logs when batch rows are committed before print execution
+#       - Improves traceability of batch lifecycle during troubleshooting
+#
 ## 2026-04-16 — v3.3
 #   • FIX: Prevent repeated batch requeue after print failure
 #       - Added commit of batch header + batch items BEFORE physical printing
@@ -154,7 +164,7 @@ import os
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "3.3"
+SERVICE_VERSION = "3.4"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -268,17 +278,41 @@ DISPLAY_OBJ_QR = "objQr"
 CONTAINER_OBJ_LABEL = "objContainerLabel"
 CONTAINER_OBJ_QR = "objQr"
 
-logging.basicConfig(
-    filename=str(LOG_FILE),
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    force=True,
-)
+from logging.handlers import RotatingFileHandler
 
-# Force-create the log file so there is no guessing
+# ------------------------------------------------------------
+# Main Service log Setup
+# ------------------------------------------------------------
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 LOG_FILE.touch(exist_ok=True)
 
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.handlers.clear()
+
+formatter = logging.Formatter(
+    "%(asctime)s | %(levelname)s | %(message)s"
+)
+
+# File (rotating)
+file_handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=5 * 1024 * 1024,   # 5 MB
+    backupCount=10,
+    encoding="utf-8",
+)
+file_handler.setFormatter(formatter)
+
+# Console (so your blue window still shows activity)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# ------------------------------------------------------------
+# STARTUP LOGS
+# ------------------------------------------------------------
 logging.info("%s started", SERVICE_ID)
 logging.info("Logging initialized. Log file: %s", LOG_FILE.resolve())
 
