@@ -42,19 +42,43 @@ No service-code change has been made during this recovery work.
 
 ## Production Host Boundary
 
-The Label Print Service production host is a **dedicated Beelink Windows machine**.
+The Label Print Service production host is a **dedicated Beelink Windows machine** whose service-recorded Windows hostname is:
 
-The UNC path used from the office PC is:
+```text
+PRINT-SERVER
+```
+
+Name resolution from `MSB-Office-PC` on 2026-08-22 established:
+
+```text
+print-server.localdomain -> 192.168.5.56
+```
+
+The production working tree is exposed to the office PC through:
 
 ```text
 \\print-server\MSB_LabelService
 ```
 
-The 2026-08-22 reconnaissance commands were initially run from `MSB-Office-PC` while its PowerShell current directory pointed at that UNC share. As a result, the Windows OS, Python installation, local desktop shortcuts, local scheduled tasks, Brother software inventory, and local Windows printer queues returned by that command set describe **MSB-Office-PC**, not the dedicated Beelink production host.
+SMB connectivity to `PRINT-SERVER` was verified on TCP 445. WinRM / PowerShell Remoting was not enabled: TCP 5985 and 5986 were closed. No remote-management configuration was changed as part of reconnaissance.
+
+The 2026-08-22 reconnaissance commands were initially run from `MSB-Office-PC` while its PowerShell current directory pointed at the UNC share. As a result, the Windows OS, Python installation, local desktop shortcuts, local scheduled tasks, Brother software inventory, and local Windows printer queues returned by that initial command set describe **MSB-Office-PC**, not `PRINT-SERVER`.
 
 Those office-PC observations must not be promoted as print-server runtime facts.
 
-The UNC/Git results remain useful: they verify that the service working tree exposed through `\\print-server\MSB_LabelService` was on `main`, clean against `origin/main`, and at commit `2ec15fcf9fd39230dfb4aba32721e72e8697b0b4` when inspected.
+The UNC/Git results remain valid: they verify that the service working tree exposed through `\\print-server\MSB_LabelService` was on `main`, clean against `origin/main`, and at commit `2ec15fcf9fd39230dfb4aba32721e72e8697b0b4` when inspected.
+
+## Runtime Account Boundary
+
+The dedicated Beelink has a Windows user account named:
+
+```text
+printserver
+```
+
+The account is password-protected. The password and other credential material are **not documentation data and must not be committed to Git**.
+
+The exact role of this account in interactive login, startup, scheduled execution, printer profile ownership, and service recovery still requires direct verification on `PRINT-SERVER`.
 
 ## Production Reliability Issue — Windows Update
 
@@ -95,7 +119,7 @@ SERVICE_VERSION = 3.4
 SHA-256 = DFE48D51D4213313F47738B09964BCDFB4788A8B83D5D4CB6130443E7EA3C1BD
 ```
 
-This is strong evidence that the production share contains the source baseline just pushed to Git. The actual execution command and Python interpreter must still be verified **on the Beelink host itself**.
+This is strong evidence that the production share contains the source baseline just pushed to Git. The actual execution command and Python interpreter must still be verified **on `PRINT-SERVER` itself**.
 
 ## Protected Configuration
 
@@ -150,9 +174,35 @@ label_service.log.2     5242807 bytes  modified 2026-07-31 21:24:18
 label_service.log.10    5242869 bytes  modified 2026-05-10 13:55:38
 ```
 
-This proves that the shared production runtime was active well after the March prototype period.
+The v3.4 startup records identify `PRINT-SERVER` as the execution hostname. Recovered startup entries include:
 
-The service source logs its startup identity, including hostname. Existing logs can therefore help verify the Beelink execution hostname without changing production.
+```text
+2026-05-18 08:18:41  PRINT-SERVER PID 8220
+2026-06-15 09:31:06  PRINT-SERVER PID 9176
+2026-06-16 13:06:10  PRINT-SERVER PID 1636
+2026-06-16 13:21:11  PRINT-SERVER PID 23692
+2026-06-16 13:38:32  PRINT-SERVER PID 24408
+2026-06-23 08:52:03  PRINT-SERVER PID 96
+2026-07-27 15:46:06  PRINT-SERVER PID 172548
+2026-07-28 10:23:18  PRINT-SERVER PID 181380
+2026-08-11 15:47:06  PRINT-SERVER PID 12876
+```
+
+The most recent log tail shows the service operating normally through:
+
+```text
+2026-08-11 22:42:52
+```
+
+Immediately before logging stopped, the service was polling PostgreSQL every 15 seconds, reporting zero pending Display and Container labels, and entering its normal idle state. The recovered final log lines contain no application exception, PostgreSQL failure, printer failure, failed-batch loop, or other service-level error.
+
+Therefore the evidence establishes:
+
+- v3.4 was healthy and idle immediately before logging stopped;
+- logging ceased after 2026-08-11 22:42:52;
+- no later v3.4 startup entry was found in the retained logs during the 2026-08-22 reconnaissance.
+
+The evidence does **not** establish why the process stopped or whether a Windows Update/reboot caused this specific occurrence. That causal relationship must not be documented as fact until direct Beelink evidence supports it.
 
 The shared `state/` directory was empty at the time of inspection.
 
@@ -177,7 +227,7 @@ Current source and recovered operational evidence support this boundary:
 ```text
 Production Database / Directus
     -> PostgreSQL label request and batch state
-        -> dedicated Beelink Windows print server
+        -> PRINT-SERVER (192.168.5.56; dedicated Beelink Windows host)
             -> label_poll_service_v3.py (v3.4)
                 -> Brother b-PAC3 SDK
                     -> Windows print spooler / PT-P950NW queue
@@ -185,7 +235,7 @@ Production Database / Directus
                             -> physical labels
 ```
 
-The Beelink's exact Windows hostname, OS/build, local service working path, Python interpreter, b-PAC installation, printer queue configuration, startup launcher, auto-start behavior, and backup/rebuild process still require direct verification on that machine.
+The Beelink's exact Windows OS/build, hardware model, local service working path, Python interpreter, b-PAC installation, printer queue configuration, startup launcher, auto-start behavior, and backup/rebuild process still require direct verification on that machine.
 
 ## Office-PC Observations — Not Production Authority
 
@@ -193,7 +243,7 @@ The earlier command set established several facts about `MSB-Office-PC`, includi
 
 These are useful only as workstation/development evidence. They must not be copied into the production print-server runbook unless separately verified on the Beelink host.
 
-Similarly, failure to find the `Start Label Service` shortcut or an auto-start task on `MSB-Office-PC` says nothing about whether those items exist on the Beelink print server.
+Similarly, failure to find the `Start Label Service` shortcut or an auto-start task on `MSB-Office-PC` says nothing about whether those items exist on `PRINT-SERVER`.
 
 ## Documentation Drift Confirmed
 
@@ -210,20 +260,22 @@ Do not delete the March documents. Reconcile them after the Beelink runtime is v
 
 ## Exact Next Recovery Step
 
-Run the remaining read-only runtime baseline **locally on the dedicated Beelink print-server machine**, not from `MSB-Office-PC`.
+Remote reconnaissance from `MSB-Office-PC` is now intentionally stopped. SMB access has provided the source, log, hostname, and network baseline, while WinRM is not enabled. Do not enable remote-management services merely to continue this recovery.
 
-Capture only:
+When direct access to `PRINT-SERVER` is available, capture read-only:
 
-1. Windows computer name, OS/version/build, and hardware model;
+1. Windows OS/version/build and Beelink hardware model;
 2. local path corresponding to `\\print-server\MSB_LabelService`;
-3. current Git branch/HEAD/status;
-4. Python executable/version used by the Label Print Service;
+3. current Git branch/HEAD/status locally on the Beelink;
+4. Python executable/version actually used by `label_poll_service_v3.py`;
 5. running Label Print Service process command line, if active;
-6. actual service startup shortcut/launcher and whether it auto-starts after reboot;
+6. actual service startup shortcut/launcher, account context, and whether it auto-starts after reboot;
 7. b-PAC version/install location;
 8. PT-P950NW Windows queue/driver/port;
 9. current Windows Update/restart configuration at a non-secret administrative level;
 10. machine backup/recovery mechanism, if one already exists.
+
+Then determine why some update/reboot cycles fail to return the Label Print Service to its normal operational state. Do not redesign startup behavior until the current mechanism is documented.
 
 After those facts are known, update this document and the root README before changing service behavior or rewriting the March operator documentation.
 
