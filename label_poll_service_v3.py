@@ -65,6 +65,37 @@ import os
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-04-16 — v3.4
+#   • IMPROVEMENT: Added rotating main service log
+#       - Replaced basicConfig-only file logging with RotatingFileHandler
+#       - Preserves console output while preventing unlimited growth of label_service.log
+#       - Keeps rolling log history for troubleshooting
+#
+#   • IMPROVEMENT: Added explicit pre-print batch commit logging
+#       - Logs when batch rows are committed before print execution
+#       - Improves traceability of batch lifecycle during troubleshooting
+#
+## 2026-04-16 — v3.3
+#   • FIX: Prevent repeated batch requeue after print failure
+#       - Added commit of batch header + batch items BEFORE physical printing
+#       - Ensures failed batches persist in database instead of being rolled back
+#       - Allows FAILED status to be written reliably
+#       - Enables failed-batch guard logic to function correctly
+#
+#   • FIX: Conditional batch creation to eliminate false warnings
+#       - Display batch is only created when display_pending > 0
+#       - Container batch is only created when container_pending > 0
+#       - Prevents misleading "Display batch actor not found" warnings during container-only runs
+#
+#   • IMPROVEMENT: Logging clarity during batch lifecycle
+#       - Added explicit log entry when batch rows are committed prior to printing
+#       - Improves traceability of batch state transitions during debugging
+#
+#   • OPERATIONAL FIX: Resolved repeat print storm condition
+#       - Root cause: failed batches rolled back before status update, leaving print_label flags active
+#       - Result: same labels requeued and printed multiple times
+#       - v3.3 ensures failed batches remain visible and block retries until resolved
+#
 ## 2026-03-30 — v3.2
 #   • FEATURE: Capture true user actor for label batch creation
 #       - Batch started_by_person_id / started_by_text now sourced from
@@ -133,7 +164,7 @@ import os
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "3.2"
+SERVICE_VERSION = "3.4"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -247,17 +278,41 @@ DISPLAY_OBJ_QR = "objQr"
 CONTAINER_OBJ_LABEL = "objContainerLabel"
 CONTAINER_OBJ_QR = "objQr"
 
-logging.basicConfig(
-    filename=str(LOG_FILE),
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    force=True,
-)
+from logging.handlers import RotatingFileHandler
 
-# Force-create the log file so there is no guessing
+# ------------------------------------------------------------
+# Main Service log Setup
+# ------------------------------------------------------------
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 LOG_FILE.touch(exist_ok=True)
 
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.handlers.clear()
+
+formatter = logging.Formatter(
+    "%(asctime)s | %(levelname)s | %(message)s"
+)
+
+# File (rotating)
+file_handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=5 * 1024 * 1024,   # 5 MB
+    backupCount=10,
+    encoding="utf-8",
+)
+file_handler.setFormatter(formatter)
+
+# Console (so your blue window still shows activity)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# ------------------------------------------------------------
+# STARTUP LOGS
+# ------------------------------------------------------------
 logging.info("%s started", SERVICE_ID)
 logging.info("Logging initialized. Log file: %s", LOG_FILE.resolve())
 
@@ -1302,10 +1357,17 @@ def main() -> None:
                     continue
 
                 # --------------------------------------------------
-                # Step 3: Only create batches AFTER printer passes
+                # Step 3: Only create batches AFTER printer passes Updated 04/16/26 for warning and loop
                 # --------------------------------------------------
-                display_batch_id = create_display_batch(conn)
-                container_batch_id = create_container_batch(conn)
+                display_batch_id = None
+                container_batch_id = None
+
+                if display_pending > 0:
+                    display_batch_id = create_display_batch(conn)
+
+                if container_pending > 0:
+                    container_batch_id = create_container_batch(conn)
+
                 logging.info(
                     "Batch creation results - display_batch_id=%s container_batch_id=%s",
                     display_batch_id,
@@ -1318,7 +1380,21 @@ def main() -> None:
                     time.sleep(POLL_SECONDS)
                     continue
 
+                # --------------------------------------------------
+                # Commit batch header + items BEFORE physical printing
+                # so failed batches remain in the database and can be
+                # marked FAILED instead of being rolled back away.
+                # --------------------------------------------------
+                conn.commit()
+                logging.info(
+                    "Batch rows committed before printing. display_batch_id=%s container_batch_id=%s",
+                    display_batch_id,
+                    container_batch_id,
+                )
+
                 try:
+                    conn.autocommit = False
+
                     if display_batch_id:
                         process_display(conn, display_batch_id)
 
