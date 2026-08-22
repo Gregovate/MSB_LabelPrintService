@@ -60,9 +60,9 @@ The UNC/Git results remain useful: they verify that the service working tree exp
 
 Automatic Windows Updates are currently enabled on the dedicated Beelink print-server machine.
 
-Operational experience has established that Microsoft-pushed updates can leave this machine crashed or otherwise unavailable, interrupting Label Print Service operation.
+Operational experience has established that after some Microsoft-pushed updates, the Beelink does not restart cleanly or return the Label Print Service to its normal operational state without intervention.
 
-Treat this as a **production runtime reliability issue**.
+Treat this as a **production restart/recovery reliability issue**, not a crash condition.
 
 Do not solve it during documentation recovery by blindly disabling Windows Update. The production host needs a deliberate update/reboot policy that preserves security updates while preventing uncontrolled update timing and ensuring the Label Print Service returns to a known-good state after reboot.
 
@@ -73,7 +73,7 @@ The final print-server recovery/runbook must therefore document:
 - how the Label Print Service starts after reboot;
 - how to verify PostgreSQL connectivity, b-PAC, spooler, printer queue, and service readiness after an update;
 - a controlled maintenance/update window or other approved update policy;
-- rollback/recovery if an update leaves the Beelink host unusable.
+- recovery if an update/reboot does not return the Beelink and Label Print Service to their normal operational state.
 
 ## Shared Production Working Tree
 
@@ -204,7 +204,7 @@ Confirmed or suspected drift includes:
 - root README previously referenced v2 even though current source is v3.4;
 - `How_Label_Service_Works.md` predates v3.3/v3.4 reliability changes;
 - the March TODO describes requester attribution as future work even though v3.2 implemented it;
-- the current dedicated Beelink host, startup behavior, Windows Update risk, backup/rebuild procedure, and post-reboot recovery are not adequately documented.
+- the current dedicated Beelink host, startup behavior, Windows Update/restart risk, backup/rebuild procedure, and post-reboot recovery are not adequately documented.
 
 Do not delete the March documents. Reconcile them after the Beelink runtime is verified.
 
