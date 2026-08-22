@@ -14,11 +14,19 @@ SERVICE_VERSION = 3.4
 SHA-256 = DFE48D51D4213313F47738B09964BCDFB4788A8B83D5D4CB6130443E7EA3C1BD
 ```
 
-The production Label Print Service host is **not MSB-Office-PC**. It is a separate dedicated **Beelink Windows machine** exposed through the `print-server` name/share. `MSB-Office-PC` is an administration/development workstation that can access the production working tree through:
+The production Label Print Service host is **not MSB-Office-PC**. It is a separate dedicated **Beelink Windows machine** whose service-recorded Windows hostname is:
+
+```text
+PRINT-SERVER
+```
+
+From `MSB-Office-PC`, `print-server.localdomain` resolves to `192.168.5.56`, and the production working tree is accessible through:
 
 ```text
 \\print-server\MSB_LabelService
 ```
+
+The Beelink has a password-protected Windows account named `printserver`. Credential material is not documentation data and must not be committed to Git. The account's exact role in service startup and post-reboot recovery still requires direct verification on `PRINT-SERVER`.
 
 Important current source behavior includes:
 
@@ -34,6 +42,8 @@ Important current source behavior includes:
 - rotating service logging added in v3.4;
 - explicit spooler-recovery scripts present in the current source tree.
 
+The most recent retained runtime evidence shows v3.4 starting on `PRINT-SERVER` on 2026-08-11 at 15:47:06 and then polling PostgreSQL normally every 15 seconds through 22:42:52. The final retained log lines show zero pending labels and normal idle state, with no application, database, printer, or failed-batch error immediately before logging stopped. No later startup entry was found in the retained logs during the 2026-08-22 reconnaissance. The cause of that stop has **not** been established.
+
 A known production reliability issue is that automatic Windows Updates are enabled on the dedicated Beelink print server and, after some Microsoft-pushed updates, the machine does not restart cleanly or return the Label Print Service to its normal operational state without intervention. This is a restart/recovery issue, not a crash condition. The current engineering recovery must document the existing update/reboot behavior and establish a deliberate recovery/update policy before Setup season.
 
 No service redesign or production behavior change is approved as part of the current recovery work.
@@ -42,7 +52,7 @@ No service redesign or production behavior change is approved as part of the cur
 
 - [System Documentation](System_Documentation/README.md) — reusable MSB standards and Label Print Service-specific engineering rules.
 - [Label Print Service Engineering Rules](System_Documentation/Project_Rules/Label_Print_Service_Engineering_Rules.md) — required engineering, runtime, rollback, print-storm, and documentation safeguards.
-- [Runtime Recovery — 2026-08-22](docs/Label_Print_Service_Runtime_Recovery_2026-08-22.md) — current source/runtime evidence, Beelink host boundary, Windows Update/restart risk, and exact remaining reconnaissance.
+- [Runtime Recovery — 2026-08-22](docs/Label_Print_Service_Runtime_Recovery_2026-08-22.md) — current source/runtime evidence, `PRINT-SERVER` host boundary, Windows Update/restart risk, and exact remaining reconnaissance.
 - [How the Label Service Works](docs/How_Label_Service_Works.md) — March 2026 architecture description; useful historical/current evidence but requires reconciliation against v3.4 and the live Beelink runtime.
 - [Print Server Operator Guide](docs/Operator_Label_Printing.md) — March operator/admin guide; requires live-runtime verification before being treated as fully current.
 
@@ -53,7 +63,7 @@ The service is an **External Supporting Subsystem** of the MSB Production Databa
 ```text
 Directus / Production Database
     -> PostgreSQL label request + batch contracts
-        -> dedicated Beelink Windows print server
+        -> PRINT-SERVER (dedicated Beelink Windows host)
             -> MSB Label Print Service
                 -> Brother b-PAC
                     -> Windows print spooler
@@ -154,13 +164,14 @@ Before changing service behavior, review:
 
 ## Known Open Work
 
-Current engineering recovery must still:
+Remote reconnaissance from `MSB-Office-PC` is complete for now. `PRINT-SERVER` is reachable over SMB, while WinRM is not enabled. Do not enable remote-management services merely to continue documentation recovery.
 
-- inspect the dedicated Beelink print server directly;
-- verify its Windows hostname/OS/hardware and local working path;
-- verify deployed service source against Git v3.4;
-- document the Python interpreter/environment actually used by the service;
-- document the actual service startup shortcut/launcher and auto-start behavior;
+Current engineering recovery must still, when direct access to `PRINT-SERVER` is available:
+
+- verify its Windows OS/build and Beelink hardware model;
+- verify the local path behind `\\print-server\MSB_LabelService`;
+- verify the Python interpreter/environment actually used by the service;
+- document the actual service startup shortcut/launcher, `printserver` account context, and auto-start behavior;
 - document b-PAC installation/version on the Beelink;
 - document the Beelink's Brother driver, Windows queue, and PT-P950NW network relationship;
 - document protected configuration location without exposing secrets;
@@ -168,6 +179,7 @@ Current engineering recovery must still:
 - document safe service restart and spooler recovery procedures;
 - document Windows Update/reboot behavior and post-update recovery;
 - document backup/rebuild/rollback of the Beelink print server;
+- determine why some restart/update cycles fail to return the Label Print Service to normal operation;
 - reconcile `docs/How_Label_Service_Works.md`, `docs/Operator_Label_Printing.md`, and `docs/TODO_Label_Service.md` with accepted current behavior;
 - update reciprocal handoffs in `MSB-Production-Database-Project` when recovery is complete.
 
@@ -189,7 +201,7 @@ Read, in order:
 6. the current `docs/` architecture/operator material
 7. the responsible Production Database Labeling/Scanning handoff
 
-Then inspect the dedicated Beelink **read-only** and promote the verified runtime facts into Git before changing production behavior.
+Then inspect `PRINT-SERVER` **read-only** when direct access is available and promote the verified runtime facts into Git before changing production behavior.
 
 Material work is not complete until this README is reviewed and updated with the resulting current state and exact next resume point.
 
