@@ -13,7 +13,7 @@
 
 This document records the verified Label Print Service source/runtime facts recovered on 2026-08-22 before any service redesign or deployment change.
 
-It distinguishes facts verified from Git from facts observed from the Windows workstation session, and it deliberately preserves unresolved host/startup questions instead of guessing.
+The production runtime is a **dedicated Beelink Windows machine**. `MSB-Office-PC` is an administration/development workstation and is not the Label Print Service host.
 
 ## Source-Control Baseline
 
@@ -30,91 +30,76 @@ SERVICE_VERSION: 3.4
 SHA-256: DFE48D51D4213313F47738B09964BCDFB4788A8B83D5D4CB6130443E7EA3C1BD
 ```
 
-The v3.4 source contains later engineering changes that are not reflected completely in the March documentation, including:
+The v3.4 source includes:
 
 - v3.2 requester/actor attribution;
 - v3.3 failed-batch persistence and repeated-print-storm prevention;
 - v3.4 rotating main-service logging;
 - explicit pre-print batch commit logging;
-- spooler recovery utilities in the repository.
+- spooler recovery utilities.
 
-No service-code change has been made as part of this recovery work.
+No service-code change has been made during this recovery work.
 
-## Working-Tree / Filesystem Observation
+## Production Host Boundary
 
-The recovery commands were run from a PowerShell session whose current directory was:
+The Label Print Service production host is a **dedicated Beelink Windows machine**.
+
+The UNC path used from the office PC is:
 
 ```text
 \\print-server\MSB_LabelService
 ```
 
-Git reported:
+The 2026-08-22 reconnaissance commands were initially run from `MSB-Office-PC` while its PowerShell current directory pointed at that UNC share. As a result, the Windows OS, Python installation, local desktop shortcuts, local scheduled tasks, Brother software inventory, and local Windows printer queues returned by that command set describe **MSB-Office-PC**, not the dedicated Beelink production host.
+
+Those office-PC observations must not be promoted as print-server runtime facts.
+
+The UNC/Git results remain useful: they verify that the service working tree exposed through `\\print-server\MSB_LabelService` was on `main`, clean against `origin/main`, and at commit `2ec15fcf9fd39230dfb4aba32721e72e8697b0b4` when inspected.
+
+## Production Reliability Issue — Windows Update
+
+Automatic Windows Updates are currently enabled on the dedicated Beelink print-server machine.
+
+Operational experience has established that Microsoft-pushed updates can leave this machine crashed or otherwise unavailable, interrupting Label Print Service operation.
+
+Treat this as a **production runtime reliability issue**.
+
+Do not solve it during documentation recovery by blindly disabling Windows Update. The production host needs a deliberate update/reboot policy that preserves security updates while preventing uncontrolled update timing and ensuring the Label Print Service returns to a known-good state after reboot.
+
+The final print-server recovery/runbook must therefore document:
+
+- current Windows Update configuration;
+- whether restarts are automatic;
+- how the Label Print Service starts after reboot;
+- how to verify PostgreSQL connectivity, b-PAC, spooler, printer queue, and service readiness after an update;
+- a controlled maintenance/update window or other approved update policy;
+- rollback/recovery if an update leaves the Beelink host unusable.
+
+## Shared Production Working Tree
+
+Verified from the office-PC session against the UNC share:
 
 ```text
 Repo root: //print-server/MSB_LabelService
-branch: main
+Remote: https://github.com/Gregovate/MSB_LabelPrintService.git
+Branch: main
 HEAD: 2ec15fcf9fd39230dfb4aba32721e72e8697b0b4
-status: main...origin/main
+Status: main...origin/main
 ```
 
-This verifies that the current Git working tree is accessible through the `print-server` SMB/UNC name.
-
-It does **not** by itself prove that `print-server` is a separate Windows host. The PowerShell session itself reported the local computer name `MSB-Office-PC`. The `print-server` name may therefore represent another host, an SMB alias, or another naming arrangement. That relationship remains to be verified.
-
-## Windows Workstation Observed During Recovery
-
-The PowerShell session reported:
+Current service source visible through that share:
 
 ```text
-Computer name: MSB-Office-PC
-User: msb-office-pc\greg
-OS: Microsoft Windows 11 Pro
-Version: 10.0.26200
-Build: 26200
-Architecture: 64-bit
-Hardware manufacturer: Micro-Star International Co., Ltd.
-Model: MS-7D43
+label_poll_service_v3.py
+SERVICE_VERSION = 3.4
+SHA-256 = DFE48D51D4213313F47738B09964BCDFB4788A8B83D5D4CB6130443E7EA3C1BD
 ```
 
-These are verified facts for the machine on which the recovery PowerShell commands were executed.
-
-Do not yet relabel `MSB-Office-PC` as the definitive Label Print Service host until the `print-server` name and service execution host are reconciled.
-
-## Python Observed on MSB-Office-PC
-
-The default `python` command resolved to:
-
-```text
-Python 3.13.7
-C:\Users\Greg\AppData\Local\Programs\Python\Python313\python.exe
-```
-
-No running `label_poll_service_v3.py` process was found on `MSB-Office-PC` during the 2026-08-22 inspection.
-
-The only Python processes shown were LOR operator-runner processes from the Production Database project.
-
-This means one of the following remains possible and must be verified rather than assumed:
-
-- the Label Print Service was simply stopped at the time of inspection;
-- it normally runs manually on `MSB-Office-PC` but was not active;
-- it normally runs on another machine that accesses the same `\\print-server\MSB_LabelService` working tree;
-- `print-server` is another name/alias for `MSB-Office-PC` and the service is currently stopped.
-
-## Startup / Automatic-Run Observation
-
-The inspection of the **local** `MSB-Office-PC` user/public desktop did not find a shortcut whose name matched `Label` or `Print` that launches the Label Print Service.
-
-The inspection also found no Label Print Service entry in normal Windows startup commands or scheduled tasks. Only standard Microsoft printing tasks were listed.
-
-Therefore the March operator-guide statement that a **Start Label Service** desktop shortcut exists must be treated as **unverified/currently not found on the inspected local desktop**.
-
-The repository root currently contains `KillSpooler.lnk`, but no Git-indexed `Start Label Service` launcher was found during repository search.
-
-Do not modify the operator guide until the actual launcher/start method is identified.
+This is strong evidence that the production share contains the source baseline just pushed to Git. The actual execution command and Python interpreter must still be verified **on the Beelink host itself**.
 
 ## Protected Configuration
 
-A live configuration file exists at the repository/share root:
+A live configuration file exists in the shared production tree:
 
 ```text
 \\print-server\MSB_LabelService\config.local.ini
@@ -127,60 +112,13 @@ size: 1050 bytes
 last modified: 2026-03-27 17:08:38 local time
 ```
 
-The contents were deliberately not displayed because the file contains protected runtime configuration.
+Its contents were deliberately not displayed.
 
-`config.local.ini` must remain outside Git.
-
-## Brother / b-PAC Software Observed on MSB-Office-PC
-
-Installed Brother software observed on the inspected Windows machine includes:
-
-```text
-Brother b-PAC3 SDK (64bit) 3.4.0150
-Brother Printer Driver
-Brother IPPoverUSB Driver
-Brother Printer Setting Tool 1.6.0132
-Brother P-touch Editor 6.9.00
-Brother P-touch Editor 5.4
-Brother P-touch Address Book 1.4
-Brother P-touch Update Software
-```
-
-Verified b-PAC install location:
-
-```text
-C:\Program Files\Brother bPAC3 SDK\
-```
-
-The duplicate b-PAC uninstall entry observed in Windows inventory is recorded only as an observed software-inventory condition; no cleanup is authorized or needed for this recovery.
-
-## Brother PT-P950NW Queue Observed on MSB-Office-PC
-
-The Windows printer queue exists and reported normal status:
-
-```text
-Name: Brother PT-P950NW
-Driver: Brother PT-P950NW
-Port: IP_192.168.5.12
-Status: Normal
-Shared: False
-```
-
-The printer port is configured as:
-
-```text
-PrinterHostAddress: 192.168.5.12
-PortNumber: 515
-Protocol: LPR
-```
-
-This verifies that `MSB-Office-PC` currently has the correct Brother P950NW Windows queue and network path configured.
-
-It does not yet prove that the Label Print Service currently executes on this same host.
+`config.local.ini` contains protected runtime configuration and must remain outside Git.
 
 ## Current Brother Templates
 
-The shared/runtime tree contains these current `.lbx` templates:
+The shared production tree contains:
 
 ```text
 QR_container_horizontal.lbx
@@ -196,15 +134,13 @@ QR_display_labels_2_line.lbx
   modified: 2026-03-21 10:30:57
 ```
 
-These filenames match the current non-secret configuration example and v3.4 source expectations.
-
 Do not change template object names or template files during engineering recovery.
 
 ## Logs / Runtime Evidence
 
-The shared `logs/` directory contains substantial production history.
+The shared `logs/` directory contains substantial production history and is consistent with the v3.4 rotating-log implementation.
 
-Observed current rotation state included:
+Observed rotation state included:
 
 ```text
 label_service.log       197971 bytes   modified 2026-08-11 22:42:52
@@ -214,15 +150,15 @@ label_service.log.2     5242807 bytes  modified 2026-07-31 21:24:18
 label_service.log.10    5242869 bytes  modified 2026-05-10 13:55:38
 ```
 
-This is consistent with the v3.4 rotating-log implementation and proves that the shared runtime tree was actively used well after the March initial build.
+This proves that the shared production runtime was active well after the March prototype period.
 
-The service source logs its startup identity including the hostname. Therefore the existing logs are the best next evidence source for identifying the actual execution host without changing production.
+The service source logs its startup identity, including hostname. Existing logs can therefore help verify the Beelink execution hostname without changing production.
 
-The `state/` directory was empty at the time of inspection.
+The shared `state/` directory was empty at the time of inspection.
 
 ## Spooler-Recovery Artifacts
 
-The office-PC push added/currently includes:
+Current source includes:
 
 ```text
 KillSpooler.lnk
@@ -230,54 +166,66 @@ killspooler.bat
 killspooler.ps1
 ```
 
-The batch/PowerShell scripts stop the Windows Spooler, delete queued spool files, and restart the service.
+The batch/PowerShell utilities stop the Windows Spooler, delete queued spool files, and restart the spooler.
 
-These are **destructive recovery utilities** because queued jobs are discarded.
-
-They must not be used as normal service-start or troubleshooting steps without first reconciling physical-print and PostgreSQL batch/request state.
+They are **destructive recovery tools** because queued jobs are discarded. They must not be used as normal startup behavior without reconciling physical print state and PostgreSQL batch/request state.
 
 ## Current Architecture Evidence
 
-The following production path is supported by current source plus the recovered runtime evidence:
+Current source and recovered operational evidence support this boundary:
 
 ```text
 Production Database / Directus
     -> PostgreSQL label request and batch state
-        -> label_poll_service_v3.py (v3.4)
-            -> Brother b-PAC3 SDK
-                -> Windows Brother PT-P950NW queue
-                    -> LPR 192.168.5.12:515
+        -> dedicated Beelink Windows print server
+            -> label_poll_service_v3.py (v3.4)
+                -> Brother b-PAC3 SDK
+                    -> Windows print spooler / PT-P950NW queue
                         -> Brother PT-P950NW
+                            -> physical labels
 ```
 
-The exact Windows host that executes `label_poll_service_v3.py`, and the exact supported startup method, remain the two main runtime facts not yet closed.
+The Beelink's exact Windows hostname, OS/build, local service working path, Python interpreter, b-PAC installation, printer queue configuration, startup launcher, auto-start behavior, and backup/rebuild process still require direct verification on that machine.
+
+## Office-PC Observations — Not Production Authority
+
+The earlier command set established several facts about `MSB-Office-PC`, including Python 3.13.7, a Brother PT-P950NW queue, b-PAC 3.4.0150, and Brother software installations.
+
+These are useful only as workstation/development evidence. They must not be copied into the production print-server runbook unless separately verified on the Beelink host.
+
+Similarly, failure to find the `Start Label Service` shortcut or an auto-start task on `MSB-Office-PC` says nothing about whether those items exist on the Beelink print server.
 
 ## Documentation Drift Confirmed
 
 The March documentation remains useful engineering evidence but is not fully current.
 
-Confirmed drift includes:
+Confirmed or suspected drift includes:
 
 - root README previously referenced v2 even though current source is v3.4;
-- `How_Label_Service_Works.md` describes the service generically as v3.x and predates v3.3/v3.4 details;
-- the March TODO still describes requester attribution as future work even though v3.2 implemented it;
-- the operator guide describes a `Start Label Service` desktop shortcut that was not found on the inspected local desktop;
-- the operator guide describes a dedicated print-server machine, but the current relationship between `MSB-Office-PC` and the `print-server` UNC name is still unresolved;
-- machine rebuild/backup and current startup/restart authority are not yet adequately documented.
+- `How_Label_Service_Works.md` predates v3.3/v3.4 reliability changes;
+- the March TODO describes requester attribution as future work even though v3.2 implemented it;
+- the current dedicated Beelink host, startup behavior, Windows Update risk, backup/rebuild procedure, and post-reboot recovery are not adequately documented.
 
-Do not delete the March documents. Reconcile or archive/supersede them only after the current runtime is established.
+Do not delete the March documents. Reconcile them after the Beelink runtime is verified.
 
 ## Exact Next Recovery Step
 
-Use read-only evidence to identify the `print-server` name and service execution host.
+Run the remaining read-only runtime baseline **locally on the dedicated Beelink print-server machine**, not from `MSB-Office-PC`.
 
-Required questions:
+Capture only:
 
-1. Does `print-server` resolve to an IP address assigned to `MSB-Office-PC`, or to another host?
-2. What hostname is recorded in recent v3.4 `MSB Label Service ... started` log entries?
-3. If the service is manually started, where is the actual current launcher and what command does it execute?
+1. Windows computer name, OS/version/build, and hardware model;
+2. local path corresponding to `\\print-server\MSB_LabelService`;
+3. current Git branch/HEAD/status;
+4. Python executable/version used by the Label Print Service;
+5. running Label Print Service process command line, if active;
+6. actual service startup shortcut/launcher and whether it auto-starts after reboot;
+7. b-PAC version/install location;
+8. PT-P950NW Windows queue/driver/port;
+9. current Windows Update/restart configuration at a non-secret administrative level;
+10. machine backup/recovery mechanism, if one already exists.
 
-After those facts are known, update this document and the repository README before editing March operator/architecture documentation or changing service behavior.
+After those facts are known, update this document and the root README before changing service behavior or rewriting the March operator documentation.
 
 ## Related Documents
 
