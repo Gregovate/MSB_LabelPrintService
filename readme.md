@@ -34,7 +34,7 @@ Important current source behavior includes:
 - rotating service logging added in v3.4;
 - explicit spooler-recovery scripts present in the current source tree.
 
-A known production reliability issue is that automatic Windows Updates are enabled on the dedicated Beelink print server and Microsoft-pushed updates have caused the machine to crash or become unavailable. The current engineering recovery must document the existing update/reboot behavior and establish a deliberate recovery/update policy before Setup season.
+A known production reliability issue is that automatic Windows Updates are enabled on the dedicated Beelink print server and, after some Microsoft-pushed updates, the machine does not restart cleanly or return the Label Print Service to its normal operational state without intervention. This is a restart/recovery issue, not a crash condition. The current engineering recovery must document the existing update/reboot behavior and establish a deliberate recovery/update policy before Setup season.
 
 No service redesign or production behavior change is approved as part of the current recovery work.
 
@@ -42,7 +42,7 @@ No service redesign or production behavior change is approved as part of the cur
 
 - [System Documentation](System_Documentation/README.md) — reusable MSB standards and Label Print Service-specific engineering rules.
 - [Label Print Service Engineering Rules](System_Documentation/Project_Rules/Label_Print_Service_Engineering_Rules.md) — required engineering, runtime, rollback, print-storm, and documentation safeguards.
-- [Runtime Recovery — 2026-08-22](docs/Label_Print_Service_Runtime_Recovery_2026-08-22.md) — current source/runtime evidence, Beelink host boundary, Windows Update risk, and exact remaining reconnaissance.
+- [Runtime Recovery — 2026-08-22](docs/Label_Print_Service_Runtime_Recovery_2026-08-22.md) — current source/runtime evidence, Beelink host boundary, Windows Update/restart risk, and exact remaining reconnaissance.
 - [How the Label Service Works](docs/How_Label_Service_Works.md) — March 2026 architecture description; useful historical/current evidence but requires reconciliation against v3.4 and the live Beelink runtime.
 - [Print Server Operator Guide](docs/Operator_Label_Printing.md) — March operator/admin guide; requires live-runtime verification before being treated as fully current.
 
@@ -121,7 +121,7 @@ They are recovery tools, not normal startup behavior. Before using them, confirm
 
 ### Windows Update / reboot
 
-The dedicated Beelink is vulnerable to uncontrolled Windows Update/reboot behavior. Do not simply disable security updates during recovery. Establish and document a controlled update/reboot/recovery process that verifies the Label Print Service, PostgreSQL access, b-PAC, printer queue, and physical printer after restart.
+The dedicated Beelink has a known post-update restart/recovery weakness. Do not simply disable security updates during recovery. Establish and document a controlled update/reboot/recovery process that verifies the Label Print Service, PostgreSQL access, b-PAC, printer queue, and physical printer after restart.
 
 ### Secrets
 
