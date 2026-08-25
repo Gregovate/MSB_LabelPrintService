@@ -43,6 +43,62 @@ Brother printer port: 192.168.5.12_1
 
 Do not record the Windows account password or `config.local.ini` secrets in Git.
 
+## `Print Service` Account and Credential Contract
+
+The verified Windows runtime account is:
+
+```text
+PRINT-SERVER\Print Service
+SID: S-1-5-21-985230857-1861968803-3831776692-1003
+```
+
+Direct verification on 2026-08-25 returned:
+
+```text
+Enabled               : True
+PasswordRequired      : False
+UserMayChangePassword : True
+```
+
+`PasswordRequired: False` means the local account policy does not require a
+password. It does **not** prove that the account currently has a blank
+password and it does not authorize creating a production task without the
+account credential.
+
+The accepted `MSB Label Service` task uses:
+
+```text
+UserId    : Print Service
+LogonType : Password
+RunLevel  : Highest
+```
+
+[Windows Task Scheduler requires the account password](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/ne-taskschd-task_logon_type)
+when a task is registered with `LogonType: Password`. This logon type is what
+allows the task to run before an interactive Windows login while retaining the
+user account's normal resource access.
+
+Credential handling rules:
+
+- Keep the actual Windows password only in the approved MSB password manager
+  under an entry that clearly identifies `PRINT-SERVER\Print Service`.
+- Do not place the password in Git, Markdown, PowerShell scripts, task XML,
+  tickets, chat transcripts, or deployment logs.
+- Retrieve and verify the existing credential before creating or updating a
+  password-logon Scheduled Task.
+- Do not reset the account password merely because it is unavailable to the
+  current maintainer. A reset can invalidate credentials stored by existing
+  Scheduled Tasks and can affect other user-profile-protected runtime data.
+- Any controlled password change must include updating and retesting every
+  dependent task, SSH access, protected credential, and post-reboot runtime.
+
+The no-password `S4U` task mode is not an equivalent substitute. The same
+Microsoft Task Scheduler reference documents that an S4U task has no network
+access and no access to encrypted files. Do not use S4U for the LOR runner
+unless engineering validation proves that all Google Drive, PostgreSQL,
+runner-state, and DPAPI-protected resources remain available in that exact
+task context.
+
 ## Approved LOR Runner Host Decision — Not Yet Deployed
 
 On 2026-08-25, the permanent production host decision for the LOR operator
@@ -372,6 +428,32 @@ If task restart-on-failure settings are used, they must not create multiple conc
 
 ## Scheduled Task Troubleshooting
 
+### `0x8007052E` — User Name or Password Is Incorrect
+
+Observed while attempting to register a separate headless path-probe task:
+
+```text
+Register-ScheduledTask : The user name or password is incorrect.
+FullyQualifiedErrorId  : HRESULT 0x8007052e
+```
+
+This means Task Scheduler rejected the supplied account credential. The task
+was not created. Later `Start-ScheduledTask`, `Get-ScheduledTask`, and
+`Get-ScheduledTaskInfo` errors for that task are expected consequences and do
+not indicate additional failures.
+
+Required response:
+
+1. Stop dependent commands; do not repeatedly guess passwords.
+2. Confirm the current identity with `whoami`.
+3. Confirm the exact local account with `Get-LocalUser -Name "Print Service"`.
+4. Retrieve the existing `PRINT-SERVER\Print Service` credential from the
+   approved MSB password manager.
+5. Do not reset the account or modify `MSB Label Service` as a shortcut.
+6. Retry only after the exact account and credential have been confirmed.
+
+The failed probe did not change the production `MSB Label Service` task.
+
 ### `2147942402` — File Not Found
 
 Observed bad action:
@@ -629,5 +711,6 @@ Before clearing the spooler:
 
 | Date | Change |
 |---|---|
+| 2026-08-25 | Added the verified `PRINT-SERVER\Print Service` account and credential contract, clarified that `PasswordRequired: False` does not prove a blank password, prohibited credential storage in Git, and documented the `0x8007052E` task-registration response. |
 | 2026-08-25 | Recorded PRINT-SERVER as the approved permanent LOR runner host, explicitly marked the transfer as not yet deployed, and added prerequisite, isolation, cutover, reboot, and rollback gates. |
 | 2026-08-24 | Created from direct `PRINT-SERVER` reconnaissance. Documented OpenSSH installation, verified pre-login operation, Scheduled Task configuration and troubleshooting, physical printing under Task Scheduler, and successful unattended reboot/physical-print acceptance. |
