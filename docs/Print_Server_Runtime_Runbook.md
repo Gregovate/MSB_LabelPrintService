@@ -80,8 +80,9 @@ user account's normal resource access.
 
 Credential handling rules:
 
-- Keep the actual Windows password only in the approved MSB password manager
-  under an entry that clearly identifies `PRINT-SERVER\Print Service`.
+- As verified on 2026-08-25, the current credential record is an onsite
+  physical label at the PRINT-SERVER workstation. The runbook records that
+  retrieval method but must never reproduce the password value.
 - Do not place the password in Git, Markdown, PowerShell scripts, task XML,
   tickets, chat transcripts, or deployment logs.
 - Retrieve and verify the existing credential before creating or updating a
@@ -448,7 +449,7 @@ Required response:
 2. Confirm the current identity with `whoami`.
 3. Confirm the exact local account with `Get-LocalUser -Name "Print Service"`.
 4. Retrieve the existing `PRINT-SERVER\Print Service` credential from the
-   approved MSB password manager.
+   authorized onsite physical record at the PRINT-SERVER workstation.
 5. Do not reset the account or modify `MSB Label Service` as a shortcut.
 6. Retry only after the exact account and credential have been confirmed.
 
@@ -711,6 +712,7 @@ Before clearing the spooler:
 
 | Date | Change |
 |---|---|
+| 2026-08-25 | Corrected the credential-retrieval record: the current authorized source is an onsite physical label at the PRINT-SERVER workstation, not a password-manager entry. The password value remains excluded from Git. |
 | 2026-08-25 | Added the verified `PRINT-SERVER\Print Service` account and credential contract, clarified that `PasswordRequired: False` does not prove a blank password, prohibited credential storage in Git, and documented the `0x8007052E` task-registration response. |
 | 2026-08-25 | Recorded PRINT-SERVER as the approved permanent LOR runner host, explicitly marked the transfer as not yet deployed, and added prerequisite, isolation, cutover, reboot, and rollback gates. |
 | 2026-08-24 | Created from direct `PRINT-SERVER` reconnaissance. Documented OpenSSH installation, verified pre-login operation, Scheduled Task configuration and troubleshooting, physical printing under Task Scheduler, and successful unattended reboot/physical-print acceptance. |
