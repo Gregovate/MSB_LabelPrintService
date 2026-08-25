@@ -8,7 +8,7 @@
 | Audience | MSB Database Administrator / Print Server Maintainer |
 | Status | CURRENT |
 | Owner | MSB Database Administrator |
-| Last Reviewed | 2026-08-24 |
+| Last Reviewed | 2026-08-25 |
 | Keywords | SSH, OpenSSH, PRINT-SERVER, reboot, remote administration, label print service, Beelink |
 
 ## Purpose
@@ -18,6 +18,14 @@ Use this procedure to administer the dedicated Label Print Service host remotely
 OpenSSH Server was installed and verified on `PRINT-SERVER` on 2026-08-24. It starts automatically with Windows and was successfully tested after reboot before any interactive Windows login.
 
 Do not record the `Print Service` Windows password in Git, scripts, documentation, or chat transcripts.
+
+The credential must instead be maintained in the approved MSB password
+manager under an entry that clearly identifies
+`PRINT-SERVER\Print Service`. If the credential is unavailable or rejected,
+stop and recover the existing credential through the approved administrator.
+Do not guess repeatedly and do not reset the account as a troubleshooting
+shortcut; the production `MSB Label Service` Scheduled Task uses stored
+password-logon credentials.
 
 ## Current SSH Endpoint
 
@@ -63,6 +71,11 @@ yes
 ```
 
 Enter the Windows password when prompted. The password is not displayed while typing.
+
+If SSH or Scheduled Task registration rejects the password, confirm that the
+credential came from the approved `PRINT-SERVER\Print Service` password-manager
+entry. `Get-LocalUser` reporting `PasswordRequired: False` does not prove that
+the current account password is blank.
 
 ### 3. Verify You Are on the Correct Machine
 
@@ -292,4 +305,5 @@ Do not change firewall scope, authentication policy, Windows accounts, or SSH co
 
 | Date | Change |
 |---|---|
+| 2026-08-25 | Added the secure credential-retrieval rule, prohibited password guessing and unplanned account resets, and clarified the meaning of `PasswordRequired: False`. |
 | 2026-08-24 | Created from the verified PRINT-SERVER OpenSSH installation, pre-login reboot test, SSH login procedure, remote reboot command, reconnect procedure, and unattended Label Print Service recovery acceptance. |
