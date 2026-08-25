@@ -100,7 +100,7 @@ unless engineering validation proves that all Google Drive, PostgreSQL,
 runner-state, and DPAPI-protected resources remain available in that exact
 task context.
 
-## Approved LOR Runner Host Decision — Not Yet Deployed
+## Approved LOR Runner Host — Implementation Ready, Not Yet Deployed
 
 On 2026-08-25, the permanent production host decision for the LOR operator
 runner was corrected:
@@ -108,7 +108,7 @@ runner was corrected:
 ```text
 Temporary/test host: MSB-OFFICE-PC (192.168.5.55)
 Approved production host: PRINT-SERVER (192.168.5.56)
-Deployment status: PLANNED — NOT YET INSTALLED OR ACCEPTED
+Deployment status: IMPLEMENTATION READY — NOT YET INSTALLED OR ACCEPTED
 ```
 
 The Office Desktop was suitable for initial runner testing, but it is not an
@@ -133,15 +133,53 @@ The existing `MSB Label Service` task, `C:\MSB_LabelService` deployment,
 Brother configuration, printing credentials, logs, and spooler recovery must
 remain unchanged and operationally independent.
 
+### Headless LOR Path Acceptance — PASSED 2026-08-25
+
+A temporary Scheduled Task was registered with the actual Print Service
+account credential and the same noninteractive security contract planned for
+the production runner:
+
+```text
+UserId        : Print Service
+LogonType     : Password
+RunLevel      : Highest
+LastTaskResult: 0
+Identity      : PRINT-SERVER\Print Service
+SessionId     : 0
+UserInteractive=False
+GDrivePresent=True
+```
+
+The task confirmed all required LOR paths from that headless Session-0
+context:
+
+```text
+G:\Shared drives\MSB Database
+G:\Shared drives\MSB Database\Database Previews V6.6.10
+G:\Shared drives\MSB Database\LOR Version Reviews
+G:\Shared drives\MSB Database\LOR Version Reviews\runner-state.json
+G:\Shared drives\MSB Database\database\lor_output_v7_scene.db
+```
+
+The temporary probe task and its files are not production components and must
+be removed after evidence capture.
+
+Runner V1.6.0 and the `PrintServerUnattended` deployment profile were merged
+into the Production Database repository by
+[PR 74](https://github.com/Gregovate/MSB-Production-Database-Project/pull/74).
+The implementation enforces the correct host and account, creates a separate
+at-startup Password-logon task with a one-minute delay, defaults to
+`192.168.5.56:8791`, and preserves the Office interactive profile for rollback.
+
 ### Required Evidence Before Deployment
 
 Do not install or pair the LOR runner on PRINT-SERVER until all of the following
 are verified from the `PRINT-SERVER\Print Service` execution context:
 
-1. The approved LOR preview source, compatibility manifest, durable runner
+1. **PASSED:** The approved LOR preview source, compatibility manifest, durable runner
    state, review records, and SQLite output are available read/write through a
    stable path.
-2. The path remains available before any interactive desktop login and after a
+2. **PASSED:** The path remains available before any interactive desktop login and after a
    reboot. A user-session-only `G:` mapping must not be assumed to exist for a
    headless Scheduled Task.
 3. The selected Python environment supports the reviewed parser, version
@@ -149,9 +187,9 @@ are verified from the `PRINT-SERVER\Print Service` execution context:
    the Label Print Service environment.
 4. PRINT-SERVER can reach PostgreSQL and `msb-prod-db`; `msb-prod-db` can reach
    the proposed TCP 8791 listener.
-5. The runner launcher supports an at-startup, noninteractive task under the
-   permanent account. The current logged-in-user task model must not be copied
-   unchanged and represented as unattended production operation.
+5. **IMPLEMENTED IN V1.6.0:** The runner launcher supports an at-startup,
+   Password-logon task under the permanent account while retaining the Office
+   interactive profile only for recovery/rollback.
 6. A rollback plan preserves the working Label Print Service and the current
    LOR runner state while preventing both the old and new listener from being
    active simultaneously.
@@ -707,11 +745,13 @@ Before clearing the spooler:
 - [How the Label Service Works](How_Label_Service_Works.md)
 - [Historical Operator Guide](Operator_Label_Printing.md)
 - [Label Print Service Engineering Rules](../System_Documentation/Project_Rules/Label_Print_Service_Engineering_Rules.md)
+- [LOR Runner Operations and Disaster Recovery](https://github.com/Gregovate/MSB-Production-Database-Project/blob/main/LOR2DB/Application/Office_PC_Runner_Operations_and_Disaster_Recovery.md)
 
 ## Revision History
 
 | Date | Change |
 |---|---|
+| 2026-08-25 | Recorded the passing Session-0 headless LOR path probe and the merged V1.6.0 `PrintServerUnattended` deployment implementation. Production installation and cutover remain pending. |
 | 2026-08-25 | Corrected the credential-retrieval record: the current authorized source is an onsite physical label at the PRINT-SERVER workstation, not a password-manager entry. The password value remains excluded from Git. |
 | 2026-08-25 | Added the verified `PRINT-SERVER\Print Service` account and credential contract, clarified that `PasswordRequired: False` does not prove a blank password, prohibited credential storage in Git, and documented the `0x8007052E` task-registration response. |
 | 2026-08-25 | Recorded PRINT-SERVER as the approved permanent LOR runner host, explicitly marked the transfer as not yet deployed, and added prerequisite, isolation, cutover, reboot, and rollback gates. |
