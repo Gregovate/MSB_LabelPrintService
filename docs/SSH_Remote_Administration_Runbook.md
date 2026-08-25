@@ -19,13 +19,13 @@ OpenSSH Server was installed and verified on `PRINT-SERVER` on 2026-08-24. It st
 
 Do not record the `Print Service` Windows password in Git, scripts, documentation, or chat transcripts.
 
-The credential must instead be maintained in the approved MSB password
-manager under an entry that clearly identifies
-`PRINT-SERVER\Print Service`. If the credential is unavailable or rejected,
-stop and recover the existing credential through the approved administrator.
-Do not guess repeatedly and do not reset the account as a troubleshooting
-shortcut; the production `MSB Label Service` Scheduled Task uses stored
-password-logon credentials.
+As verified on 2026-08-25, the current credential record is an onsite physical
+label at the PRINT-SERVER workstation. This runbook records the retrieval
+method but never the password value. If the credential is unavailable or
+rejected, stop and recover it through the approved administrator. Do not guess
+repeatedly and do not reset the account as a troubleshooting shortcut; the
+production `MSB Label Service` Scheduled Task uses stored password-logon
+credentials.
 
 ## Current SSH Endpoint
 
@@ -73,9 +73,9 @@ yes
 Enter the Windows password when prompted. The password is not displayed while typing.
 
 If SSH or Scheduled Task registration rejects the password, confirm that the
-credential came from the approved `PRINT-SERVER\Print Service` password-manager
-entry. `Get-LocalUser` reporting `PasswordRequired: False` does not prove that
-the current account password is blank.
+credential came from the authorized onsite record at the PRINT-SERVER
+workstation. `Get-LocalUser` reporting `PasswordRequired: False` does not prove
+that the current account password is blank.
 
 ### 3. Verify You Are on the Correct Machine
 
@@ -305,5 +305,6 @@ Do not change firewall scope, authentication policy, Windows accounts, or SSH co
 
 | Date | Change |
 |---|---|
+| 2026-08-25 | Corrected the credential-retrieval record to the authorized onsite physical label at the PRINT-SERVER workstation; the password value remains excluded from Git. |
 | 2026-08-25 | Added the secure credential-retrieval rule, prohibited password guessing and unplanned account resets, and clarified the meaning of `PasswordRequired: False`. |
 | 2026-08-24 | Created from the verified PRINT-SERVER OpenSSH installation, pre-login reboot test, SSH login procedure, remote reboot command, reconnect procedure, and unattended Label Print Service recovery acceptance. |
