@@ -4,12 +4,12 @@
 |---|---|
 | Document Type | Operational SOP |
 | System | MSB Label Print Service / PRINT-SERVER |
-| Task | Start, verify, remotely recover, and reboot-test the Label Print Service runtime |
+| Task | Start, verify, remotely recover, and reboot-test PRINT-SERVER runtimes |
 | Audience | MSB Database Administrator / Print Server Maintainer |
 | Status | CURRENT |
 | Owner | MSB Database Administrator |
-| Last Reviewed | 2026-08-24 |
-| Keywords | label print service, print server, PRINT-SERVER, Brother, PT-P950NW, b-PAC, SSH, OpenSSH, Task Scheduler, reboot, recovery |
+| Last Reviewed | 2026-08-25 |
+| Keywords | label print service, LOR runner, print server, PRINT-SERVER, Brother, PT-P950NW, b-PAC, SSH, OpenSSH, Task Scheduler, reboot, recovery |
 
 ## Purpose
 
@@ -18,6 +18,11 @@ This runbook documents the verified production startup and recovery procedure fo
 It exists so the Label Print Service can recover after a Windows reboot or update without requiring a user to log into the Beelink and manually start the service.
 
 This is **not** the normal Directus label-request procedure. This document is for administrators maintaining the dedicated print-server runtime.
+
+The Label Print Service remains the accepted production workload on this host.
+Additional supporting runtimes must be documented and deployed independently;
+they must not be folded into the Label Print Service process, startup task,
+configuration, logs, or recovery actions.
 
 ## Current Production Runtime
 
@@ -37,6 +42,92 @@ Brother printer port: 192.168.5.12_1
 ```
 
 Do not record the Windows account password or `config.local.ini` secrets in Git.
+
+## Approved LOR Runner Host Decision — Not Yet Deployed
+
+On 2026-08-25, the permanent production host decision for the LOR operator
+runner was corrected:
+
+```text
+Temporary/test host: MSB-OFFICE-PC (192.168.5.55)
+Approved production host: PRINT-SERVER (192.168.5.56)
+Deployment status: PLANNED — NOT YET INSTALLED OR ACCEPTED
+```
+
+The Office Desktop was suitable for initial runner testing, but it is not an
+acceptable permanent production dependency. Closing an interactive PowerShell
+window stopped the runner on 2026-08-25, which left the LOR2DB website unable
+to start parser/version operations even though PostgreSQL and the Linux API
+remained healthy.
+
+The LOR runner must be deployed as a separate PRINT-SERVER runtime with its
+own:
+
+- Scheduled Task, expected name `MSB LOR Operator Runner`;
+- process and working directory;
+- Python environment and reviewed Production Database repository release;
+- DPAPI-protected runner token and PostgreSQL ingest credential created under
+  the permanent task account;
+- TCP 8791 listener and firewall rule restricted to `192.168.5.9`;
+- service log, parser/ingest operation records, and recovery procedure; and
+- restart-on-failure behavior that cannot create concurrent runner instances.
+
+The existing `MSB Label Service` task, `C:\MSB_LabelService` deployment,
+Brother configuration, printing credentials, logs, and spooler recovery must
+remain unchanged and operationally independent.
+
+### Required Evidence Before Deployment
+
+Do not install or pair the LOR runner on PRINT-SERVER until all of the following
+are verified from the `PRINT-SERVER\Print Service` execution context:
+
+1. The approved LOR preview source, compatibility manifest, durable runner
+   state, review records, and SQLite output are available read/write through a
+   stable path.
+2. The path remains available before any interactive desktop login and after a
+   reboot. A user-session-only `G:` mapping must not be assumed to exist for a
+   headless Scheduled Task.
+3. The selected Python environment supports the reviewed parser, version
+   checker, runner, and fixed PostgreSQL ingest dependencies without changing
+   the Label Print Service environment.
+4. PRINT-SERVER can reach PostgreSQL and `msb-prod-db`; `msb-prod-db` can reach
+   the proposed TCP 8791 listener.
+5. The runner launcher supports an at-startup, noninteractive task under the
+   permanent account. The current logged-in-user task model must not be copied
+   unchanged and represented as unattended production operation.
+6. A rollback plan preserves the working Label Print Service and the current
+   LOR runner state while preventing both the old and new listener from being
+   active simultaneously.
+
+The Print Server facts already verified in this runbook—hostname, reserved IP,
+`Print Service` account, Python location, OpenSSH, and the accepted unattended
+Scheduled Task pattern—must be reused as evidence. They do not need to be
+rediscovered unless the live host no longer matches this controlled record.
+
+### Cutover Acceptance Gates
+
+The PRINT-SERVER runner is not production-accepted until all of these pass:
+
+- local authenticated runner health and expected runner version;
+- TCP 8791 reachability from `msb-prod-db` and a successful authenticated
+  Linux API-to-runner request;
+- correct protected-token fingerprint after controlled re-pairing;
+- LOR2DB dashboard reports the runner available;
+- a controlled parser run reads the approved preview source and publishes a
+  fully validated SQLite output;
+- no unintended PostgreSQL ingest or reconciliation is started merely to test
+  the host transfer;
+- PRINT-SERVER reboot returns both `MSB Label Service` and
+  `MSB LOR Operator Runner` without an interactive Windows login;
+- the Label Print Service still completes a controlled physical-print test;
+  and
+- the old MSB-OFFICE-PC listener/task is disabled only after acceptance.
+
+The runner implementation, parser/ingest contract, Linux pairing, and LOR2DB
+operator recovery remain owned by
+[`Gregovate/MSB-Production-Database-Project`](https://github.com/Gregovate/MSB-Production-Database-Project).
+This runbook owns the PRINT-SERVER host/runtime boundary and the requirement
+that the two production workloads remain independently recoverable.
 
 ## Normal Startup Model
 
@@ -538,4 +629,5 @@ Before clearing the spooler:
 
 | Date | Change |
 |---|---|
+| 2026-08-25 | Recorded PRINT-SERVER as the approved permanent LOR runner host, explicitly marked the transfer as not yet deployed, and added prerequisite, isolation, cutover, reboot, and rollback gates. |
 | 2026-08-24 | Created from direct `PRINT-SERVER` reconnaissance. Documented OpenSSH installation, verified pre-login operation, Scheduled Task configuration and troubleshooting, physical printing under Task Scheduler, and successful unattended reboot/physical-print acceptance. |

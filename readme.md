@@ -65,6 +65,28 @@ Windows reboot/update
 
 Final unattended reboot acceptance passed on **2026-08-24**: `PRINT-SERVER` was rebooted, nobody logged into Windows to start the service, the Scheduled Task started v3.4 automatically, and a real physical label printed successfully after reboot.
 
+## Approved Additional Runtime — Pending Deployment
+
+On 2026-08-25, `PRINT-SERVER` was selected as the permanent production host
+for the MSB LOR operator runner. The runner currently associated with
+`MSB-OFFICE-PC` was a temporary/test deployment and is not the accepted
+long-term production boundary.
+
+This decision does **not** mean the LOR runner is already installed or accepted
+on PRINT-SERVER. The transfer remains pending verification of headless access
+to the approved LOR preview/state/output paths, an independent Python/runtime
+deployment, restricted TCP 8791 connectivity, protected credential creation,
+controlled Linux re-pairing, and unattended reboot acceptance.
+
+The LOR runner must use a separate Scheduled Task, process, working directory,
+credentials, listener, and logs. It must not be combined with or modify the
+working `MSB Label Service` task and printing runtime.
+
+See [Print Server Runtime Runbook](docs/Print_Server_Runtime_Runbook.md) for
+the controlled prerequisites and acceptance gates. The LOR runner application
+and operator workflow remain owned by
+[`Gregovate/MSB-Production-Database-Project`](https://github.com/Gregovate/MSB-Production-Database-Project).
+
 ## Start Here
 
 For current runtime administration and engineering recovery, read:
@@ -261,7 +283,10 @@ The post-reboot startup problem is resolved. Remaining engineering reconnaissanc
 - Windows Update configuration/history and controlled maintenance policy;
 - machine backup/rebuild/recovery mechanism;
 - reconciliation of `docs/How_Label_Service_Works.md`, `docs/Operator_Label_Printing.md`, and `docs/TODO_Label_Service.md`;
-- reciprocal handoff updates to related MSB repositories where appropriate.
+- reciprocal handoff updates to related MSB repositories where appropriate;
+- controlled deployment and acceptance of the independently hosted LOR runner
+  on PRINT-SERVER, including durable headless access to its Google Drive data
+  paths and removal of the temporary MSB-OFFICE-PC listener after cutover.
 
 Do not redesign the working label-printing application while completing this recovery inventory.
 
