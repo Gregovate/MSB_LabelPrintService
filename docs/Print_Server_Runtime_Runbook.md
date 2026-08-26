@@ -217,10 +217,10 @@ Passed:
 - independent Label Service and LOR task/process/working-directory boundaries;
 - old MSB-OFFICE-PC listener disabled.
 
-The Label Print Service's earlier unattended physical-print acceptance remains
-valid because its task, Python, configuration, and printer path were unchanged.
-A separate post-LOR-cutover physical label was not recorded during this
-incident.
+A physical Display label printed successfully through the independent Label
+Print Service after the PRINT-SERVER reboot and LOR cutover. This confirms the
+Label Service task, Python runtime, PostgreSQL polling, b-PAC path, spooler, and
+printer remained operational alongside the LOR runner.
 
 Known limitation: the LOR task can check prerequisites before Google Drive has
 finished mounting `G:` and then exit. Engineering must add bounded readiness
