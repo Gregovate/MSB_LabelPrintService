@@ -768,6 +768,7 @@ Before clearing the spooler:
 - [Historical Operator Guide](Operator_Label_Printing.md)
 - [Label Print Service Engineering Rules](../System_Documentation/Project_Rules/Label_Print_Service_Engineering_Rules.md)
 - [LOR Runner Operations and Disaster Recovery](https://github.com/Gregovate/MSB-Production-Database-Project/blob/main/LOR2DB/Application/Office_PC_Runner_Operations_and_Disaster_Recovery.md)
+- [LOR Routine Display Maintenance and PRINT-SERVER Cutover Incident — 2026-08-25](https://github.com/Gregovate/MSB-Production-Database-Project/blob/main/LOR2DB/Application/LOR_Routine_Display_Maintenance_and_PRINT_SERVER_Cutover_Incident_2026-08-25.md)
 
 ## Revision History
 
