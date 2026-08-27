@@ -9,7 +9,7 @@
 | Owner | MSB Database Administrator |
 | Initial Revision | 2026-08-27 |
 | Last Reviewed | 2026-08-27 |
-| Keywords | failed batch, retry blocked, label service, start, stop, status, live log, printer preflight, template, recovery |
+| Keywords | failed batch, retry blocked, label service, start, stop, status, live log, printer preflight, template, recovery, PostgreSQL, psql |
 
 ## Purpose
 
@@ -115,11 +115,56 @@ For a failed-before-print recovery, this must show no unresolved job associated 
 
 If a job is present, do not delete the PostgreSQL failed batch yet.
 
-## 5. Inspect the Failed Display Batch
+## 5. Enter PostgreSQL Before Running SQL
 
-Run these statements in the normal PostgreSQL administration client against database `msb`.
+The PostgreSQL server runs in the `msb-postgres` Docker container on `msb-prod-db` (`192.168.5.9`). SQL statements cannot be pasted directly at the Linux shell prompt.
 
-Replace `<batch_id>` with the blocked Display batch ID shown in the service log.
+From `PRINT-SERVER`, connect to the database host:
+
+```powershell
+ssh msbadmin@192.168.5.9
+```
+
+Enter the authorized `msbadmin` SSH password when prompted.
+
+After login, the prompt will look similar to:
+
+```text
+msbadmin@msb-prod-db:~$
+```
+
+That is a **Linux shell**, not PostgreSQL. Do not paste `SELECT`, `DELETE`, `BEGIN`, or other SQL at that prompt.
+
+Enter the PostgreSQL client using the command documented by the MSB Server Management repository:
+
+```bash
+docker exec -it msb-postgres psql -U msbadmin -d msb
+```
+
+A successful connection changes the prompt to a PostgreSQL prompt similar to:
+
+```text
+msb=#
+```
+
+Only after the `msb=#` prompt appears should the SQL in the following sections be entered.
+
+Useful `psql` commands:
+
+```text
+\conninfo     show the current database/session
+\q            exit psql and return to the Linux shell
+```
+
+To leave the Linux SSH session after exiting `psql`:
+
+```bash
+exit
+```
+
+## 6. Inspect the Failed Display Batch
+
+At the `msb=#` PostgreSQL prompt, replace `<batch_id>` with the blocked Display batch ID shown in the service log.
 
 ```sql
 SELECT
@@ -164,11 +209,11 @@ A failed batch may be retired for clean retry only when all of the following are
 
 If any of those conditions are not true or cannot be proven, do not use the delete/retry procedure below.
 
-## 6. Retire a Failed-Before-Print Display Batch and Preserve the Retry Request
+## 7. Retire a Failed-Before-Print Display Batch and Preserve the Retry Request
 
 The batch-item foreign key uses `ON DELETE CASCADE`, so deleting the failed header removes only that batch's snapshot items. It does **not** clear `ref.display.print_label`; that flag is cleared only by successful finalization.
 
-Use one transaction and the exact failed batch ID:
+At the `msb=#` prompt, use one transaction and the exact failed batch ID:
 
 ```sql
 BEGIN;
@@ -212,9 +257,9 @@ Expected result:
 
 `fail_last_batch.py` marks an active batch `FAILED` while preserving selection flags. The production service then intentionally blocks newer work until the failed batch is manually reconciled. Do not run it expecting the service to resume automatically.
 
-## 7. Container Failed-Batch Inspection
+## 8. Container Failed-Batch Inspection
 
-Use the corresponding Container queries when the service reports a failed container batch:
+At the `msb=#` PostgreSQL prompt, use the corresponding Container queries when the service reports a failed container batch:
 
 ```sql
 SELECT
@@ -259,7 +304,9 @@ COMMIT;
 
 The same safety rules apply: do not delete and retry if physical printing may already have occurred.
 
-## 8. Verify the Production Brother Template Runtime Paths
+When database recovery is complete, leave PostgreSQL with `\q`, then leave the SSH session with `exit`.
+
+## 9. Verify the Production Brother Template Runtime Paths
 
 The source-controlled PT-P950NW templates currently live under:
 
@@ -298,7 +345,7 @@ Printer preflight failed: Could not open template: C:\MSB_LabelService\templates
 
 This failure occurs before a new batch should be created by the current v3.4 preflight path.
 
-## 9. Verify PT-P950NW Media Before Restart
+## 10. Verify PT-P950NW Media Before Restart
 
 The status-only SNMP diagnostic is under the repository test diagnostics. Run it from the deployed repository path:
 
@@ -324,7 +371,7 @@ Cover open: Error Information 2 = 0x10; media identity is not reported while the
 
 Use the actual tested printer response as the operational evidence; do not assume a cassette is ready merely because it is physically present.
 
-## 10. Start the Label Service Again
+## 11. Start the Label Service Again
 
 Preferred unattended start:
 
@@ -364,7 +411,7 @@ Batch rows committed before printing...
 Display batch <new id> completed successfully.
 ```
 
-## 11. Interactive Manual Fallback Start
+## 12. Interactive Manual Fallback Start
 
 Use this only when the Scheduled Task is intentionally stopped and an administrator wants a visible console:
 
@@ -377,12 +424,14 @@ Stop the interactive copy with `Ctrl+C`.
 
 Do not run an interactive copy at the same time as the Scheduled Task copy.
 
-## 12. Recovery Decision Summary
+## 13. Recovery Decision Summary
 
 ```text
 FAILED batch reported
     -> stop service
     -> inspect Windows print queue
+    -> SSH to msb-prod-db
+    -> enter psql inside msb-postgres
     -> inspect failed header/items and current print request flags
     -> determine whether physical printing occurred
 
@@ -404,9 +453,11 @@ FAILED batch reported
 - [Operator Label Printing](Operator_Label_Printing.md)
 - [Runtime Recovery — 2026-08-24](Label_Print_Service_Runtime_Recovery_2026-08-24.md)
 - [Label Print Service Engineering Rules](../../System_Documentation/Project_Rules/Label_Print_Service_Engineering_Rules.md)
+- [MSB Server Management — PostgreSQL Server Commands](https://github.com/Gregovate/MSB-Server-Management/blob/main/docs/postgresql/Server%20Commands.md)
 
 ## Revision History
 
 | Date | Change |
 |---|---|
+| 2026-08-27 | Added the missing end-to-end PostgreSQL entry procedure: SSH to `msb-prod-db`, enter `psql` inside the `msb-postgres` container, identify the `msb=#` prompt, and exit cleanly. This closes the gap that previously told an administrator to run SQL without saying how to enter PostgreSQL. |
 | 2026-08-27 | Initial controlled recovery SOP. Added scheduled-task start/stop/status, live-log access for the background service, FAILED-batch inspection and safe failed-before-print retirement, source-vs-runtime template path contract, and tested PT-P950NW SNMP media checks. |
