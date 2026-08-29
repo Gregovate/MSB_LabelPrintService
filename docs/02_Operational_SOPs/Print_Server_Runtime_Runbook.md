@@ -8,8 +8,8 @@
 | Audience | MSB Database Administrator / Print Server Maintainer |
 | Status | CURRENT |
 | Owner | MSB Database Administrator |
-| Last Reviewed | 2026-08-25 |
-| Keywords | label print service, LOR runner, print server, PRINT-SERVER, Brother, PT-P950NW, b-PAC, SSH, OpenSSH, Task Scheduler, reboot, recovery |
+| Last Reviewed | 2026-08-28 |
+| Keywords | label print service, LOR runner, print server, PRINT-SERVER, Brother, PT-P950NW, QL-820NWB, b-PAC, templates, template_dir, tray status, SSH, OpenSSH, Task Scheduler, reboot, recovery |
 
 ## Purpose
 
@@ -26,7 +26,7 @@ configuration, logs, or recovery actions.
 
 ## Current Production Runtime
 
-Verified on 2026-08-24:
+Verified production baseline:
 
 ```text
 Windows hostname: PRINT-SERVER
@@ -36,12 +36,76 @@ Production working directory: C:\MSB_LabelService
 Production Python: C:\Program Files\Python\python.exe
 Current service script: C:\MSB_LabelService\label_poll_service_v3.py
 Service version: 3.4
-Legacy manual launcher: C:\start_label_service.bat
+Legacy manual launcher file: C:\start_label_service.bat
 Brother printer queue: Brother PT-P950NW
 Brother printer port: 192.168.5.12_1
 ```
 
+The normal-user desktop shortcut that previously launched the print service manually was removed before the 2026 Setup hardening work. Users had been using that shortcut when a requested label did not appear, which could encourage unnecessary or duplicate service starts. Normal operation is now the Scheduled Task; the legacy batch file is an administrator fallback only if it remains on disk.
+
 Do not record the Windows account password or `config.local.ini` secrets in Git.
+
+## Template Root and Runtime Path Contract
+
+The Label Print Service is installed locally on the Beelink under:
+
+```text
+C:\MSB_LabelService
+```
+
+The current machine-local template root is:
+
+```text
+C:\MSB_LabelService\templates
+```
+
+The network share view:
+
+```text
+\\print-server\MSB_LabelService\templates
+```
+
+is an administrative/network view of the same files. The service itself should use its local `C:` paths rather than depend on its own UNC share.
+
+Current v3.4 configuration stores explicit template paths in `config.local.ini`. The Setup-hardening direction keeps the machine-local root in configuration while allowing PostgreSQL to identify a governed template by a path **relative to** that root.
+
+Example future resolution:
+
+```text
+config.local.ini template_dir
+    C:\MSB_LabelService\templates
+
+PostgreSQL template_relative_path
+    pt_p950nw/QR_display_labels_2_line_24mm.lbx
+
+Resolved local runtime path
+    C:\MSB_LabelService\templates\pt_p950nw\QR_display_labels_2_line_24mm.lbx
+```
+
+Relative paths stored outside PRINT-SERVER should use forward slashes. Python/Windows path resolution may convert them to the local separator at runtime.
+
+The intended final template layout is printer-specific:
+
+```text
+C:\MSB_LabelService\templates\
+    pt_p950nw\
+        QR_container_horizontal_36mm.lbx
+        QR_container_vertical_36mm.lbx
+        QR_display_labels_2_line_24mm.lbx
+        QR_display_labels_2_line_36mm.lbx
+        ...
+
+    ql_820nwb\
+        ...future accepted QL templates...
+```
+
+During the transition, root-level template copies remain in place so the currently deployed v3.4 absolute paths are not broken before the revised service is accepted. Do not remove those legacy root-level copies until the new template lookup, config, preflight, and physical printing have passed controlled acceptance on PRINT-SERVER.
+
+The template root is machine-local deployment configuration. If the entire LabelPrintService installation is later moved from `C:\MSB_LabelService` to another drive or directory, update `config.local.ini` and the Scheduled Task/runtime deployment as applicable. Do **not** rewrite every PostgreSQL label-template row merely because the machine installation root changed, and do not hard-code the new installation root into Python source.
+
+The PostgreSQL label-template model must not make volunteers choose a Windows printer. It identifies the requested label format/media; LabelPrintService remains responsible for resolving the actual printer queue and proving that a compatible printer/media state is ready.
+
+The QL-820NWB is not yet an accepted production Location-label runtime. Its readiness, paper/media-out behavior, final media, final Location template, and range/scanner workflow remain pending controlled testing.
 
 ## `Print Service` Account and Credential Contract
 
@@ -146,8 +210,7 @@ remain unchanged and operationally independent.
 
 A temporary Password-logon Session-0 task initially reported
 `GDrivePresent=True` and found every required LOR `G:` path. That task ran
-while an interactive desktop session had already mounted Google Drive. It did
-not prove that the mapping existed after a cold boot without login.
+while an interactive desktop session had already mounted Google Drive. It did not prove that the mapping existed after a cold boot without login.
 
 The first true reboot showed the actual boundary:
 
@@ -266,9 +329,40 @@ Windows boot
 Do not describe the LOR runtime as pre-login/headless while it depends on this
 interactive Google Drive mount.
 
+## Planned Tray Status UI — Pending Office Acceptance
+
+The current production LabelPrintService runs unattended and does not provide a normal operator feedback window. Setup hardening will add one singleton status/tray experience without changing the principle that the print engine starts automatically.
+
+This section records the accepted design direction; it is **not a claim that the tray UI is already deployed**.
+
+Required behavior:
+
+```text
+normal / successful operation
+    -> one status process/icon lives in the Windows system tray
+    -> no per-job windows
+    -> no routine popups
+
+action required
+    -> restore/show the same singleton status window
+    -> bring it to the operator's attention at a readable normal size
+    -> show the actionable condition, such as required 24 mm media while 36 mm is loaded
+
+condition corrected
+    -> print engine re-evaluates safely
+    -> printing may continue automatically when preflight passes
+    -> status window can return to the tray
+```
+
+Closing the visible status window must hide it to the tray, not terminate the print engine. The print engine and status UI should remain separable so a UI failure cannot silently stop database polling/printing.
+
+No normal-user **Start Print Server** shortcut/button should be restored. If the print engine itself is offline, the status experience should make that condition obvious rather than encourage users to start additional copies.
+
+The actual tray implementation, auto-restart behavior, foreground behavior, media-change detection, and interaction with the Scheduled Task must be tested on the physical PRINT-SERVER desktop before this behavior is marked production accepted.
+
 ## Historical Manual Launcher
 
-The legacy desktop launcher remains available as a fallback:
+The legacy launcher file is retained only as an administrator fallback if it remains present on disk:
 
 ```text
 C:\start_label_service.bat
@@ -285,9 +379,9 @@ cd /d C:\MSB_LabelService
 pause
 ```
 
-This launcher is interactive and was the former normal startup method. Before the unattended startup change, a user had to log into Windows and manually start it after a reboot.
+This launcher is interactive and was the former normal startup method. The normal-user desktop shortcut was subsequently removed because users could interpret a missing label as a reason to start another service copy.
 
-Do not use the batch file as the Scheduled Task action. The scheduled task launches Python directly.
+Do not use the batch file as the Scheduled Task action. The Scheduled Task launches Python directly. Do not instruct normal operators to use the batch file as part of ordinary label printing.
 
 ## Verified Original Reboot Failure Mode
 
@@ -634,6 +728,8 @@ Scheduled Task
 
 This confirms the task's noninteractive execution context can use the production Brother printing stack.
 
+The 2026 Setup-hardening changes are **not** covered by that earlier acceptance. New 24/36 mm automatic template selection, complete fail-before-batch preflight, compact new/replacement QR payloads, and tray/status behavior require a new controlled physical acceptance when onsite access is available.
+
 ## Reboot Acceptance — PASSED 2026-08-24
 
 Final unattended reboot acceptance passed on 2026-08-24.
@@ -663,12 +759,14 @@ The original post-reboot manual-start reliability problem is therefore resolved 
 
 ## Manual Fallback Start
 
-If the scheduled task is intentionally stopped and an administrator needs an interactive fallback, use either the existing desktop launcher or run:
+If the Scheduled Task is intentionally stopped and an administrator needs an interactive fallback, run:
 
 ```cmd
 cd /d C:\MSB_LabelService
 "C:\Program Files\Python\python.exe" label_poll_service_v3.py
 ```
+
+The legacy `C:\start_label_service.bat` file may be used by an administrator only if its continued presence and contents have first been verified. There is no normal-user desktop start shortcut in the accepted Setup direction.
 
 Do not start a manual copy if the Scheduled Task copy is already running.
 
@@ -717,7 +815,7 @@ powershell -NoProfile -Command "Get-Content 'C:\MSB_LabelService\logs\label_serv
 
 ## If Labels Are Not Printing After Reboot
 
-Do not repeatedly request labels.
+Do not repeatedly request labels and do not start another service copy merely because a label did not appear.
 
 Check in this order:
 
@@ -764,9 +862,9 @@ Before clearing the spooler:
 
 - [Repository README](../readme.md)
 - [Runtime Recovery — 2026-08-22](Label_Print_Service_Runtime_Recovery_2026-08-22.md)
-- [How the Label Service Works](How_Label_Service_Works.md)
+- [How the Label Service Works](../01_Engineering/How_Label_Service_Works.md)
 - [Historical Operator Guide](Operator_Label_Printing.md)
-- [Label Print Service Engineering Rules](../System_Documentation/Project_Rules/Label_Print_Service_Engineering_Rules.md)
+- [Label Print Service Engineering Rules](../../System_Documentation/Project_Rules/Label_Print_Service_Engineering_Rules.md)
 - [LOR Runner Operations and Disaster Recovery](https://github.com/Gregovate/MSB-Production-Database-Project/blob/main/LOR2DB/Application/Office_PC_Runner_Operations_and_Disaster_Recovery.md)
 - [LOR Routine Display Maintenance and PRINT-SERVER Cutover Incident — 2026-08-25](https://github.com/Gregovate/MSB-Production-Database-Project/blob/main/LOR2DB/Application/LOR_Routine_Display_Maintenance_and_PRINT_SERVER_Cutover_Incident_2026-08-25.md)
 
@@ -774,6 +872,7 @@ Before clearing the spooler:
 
 | Date | Change |
 |---|---|
+| 2026-08-28 | Added the canonical `C:\MSB_LabelService\templates` root, printer-specific template-folder transition, PostgreSQL-relative-path/config-root boundary, QL-820NWB acceptance gate, removed normal-user manual-start shortcut behavior, and planned singleton tray/status UI acceptance boundary. |
 | 2026-08-25 | Corrected the false Session-0 Google Drive conclusion; recorded required Print Service autologon, completed V1.6.0 production cutover, reboot/parser/ingest/Run 13 acceptance, and the remaining G: readiness limitation. |
 | 2026-08-25 | Recorded the initial Session-0 LOR path probe and merged V1.6.0 `PrintServerUnattended` deployment implementation; later cold-boot testing superseded the headless conclusion. |
 | 2026-08-25 | Corrected the credential-retrieval record: the current authorized source is an onsite physical label at the PRINT-SERVER workstation, not a password-manager entry. The password value remains excluded from Git. |
