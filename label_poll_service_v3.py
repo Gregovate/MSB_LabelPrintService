@@ -4,9 +4,13 @@ import configparser
 import csv
 import json
 import logging
+import os
+import socket
 import sys
+import tempfile
 import time
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +18,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import win32com.client
 import win32print
-import socket
-import os
 
-# ============================================================
 # ============================================================
 # MSB Label Polling Service
 # label_poll_service_v3.py
@@ -56,107 +57,49 @@ import os
 #
 # Safety:
 #   - The service will not create a new PRINTING batch if one already exists.
+#   - The service will not create a new batch if an unresolved FAILED batch exists.
 #   - The service will not create a new batch if the printer queue is not empty.
+#   - Deterministic runtime resources are preflighted before any batch is created.
 #
 # Author: Greg Liebig / Engineering Innovations, LLC
-# Date: 2026-03-21
+# Original date: 2026-03-21
 # ============================================================
 
 # ============================================================
 # CHANGE LOG
 # ============================================================
-## 2026-04-16 — v3.4
-#   • IMPROVEMENT: Added rotating main service log
-#       - Replaced basicConfig-only file logging with RotatingFileHandler
-#       - Preserves console output while preventing unlimited growth of label_service.log
-#       - Keeps rolling log history for troubleshooting
+## 2026-08-28 — v3.5 candidate (Issue #14; not yet production accepted)
+#   • FIX: Complete deterministic runtime-resource preflight now runs before
+#     any Display/Container batch header/items are created.
+#   • FIX: Preflight validates every pending current workload rather than
+#     checking only one template when both Display and Container work exists.
+#   • FIX: CSV/output parents are validated/repaired before batch creation.
+#   • SAFETY: write_csv() defensively recreates its parent immediately before
+#     the write as race protection.
+#   • FEATURE: Service publishes one atomic state/service_status.json snapshot
+#     for the planned separate singleton tray/status UI.
+#   • NOTE: 24/36 mm database-driven Display template selection is NOT in this
+#     change; it remains blocked on live ref.display / Directus reconnaissance.
+#   • NOTE: Hardware/media/tray acceptance remains onsite work.
 #
-#   • IMPROVEMENT: Added explicit pre-print batch commit logging
-#       - Logs when batch rows are committed before print execution
-#       - Improves traceability of batch lifecycle during troubleshooting
+## 2026-04-16 — v3.4
+#   • IMPROVEMENT: Added rotating main service log.
+#   • IMPROVEMENT: Added explicit pre-print batch commit logging.
 #
 ## 2026-04-16 — v3.3
-#   • FIX: Prevent repeated batch requeue after print failure
-#       - Added commit of batch header + batch items BEFORE physical printing
-#       - Ensures failed batches persist in database instead of being rolled back
-#       - Allows FAILED status to be written reliably
-#       - Enables failed-batch guard logic to function correctly
-#
-#   • FIX: Conditional batch creation to eliminate false warnings
-#       - Display batch is only created when display_pending > 0
-#       - Container batch is only created when container_pending > 0
-#       - Prevents misleading "Display batch actor not found" warnings during container-only runs
-#
-#   • IMPROVEMENT: Logging clarity during batch lifecycle
-#       - Added explicit log entry when batch rows are committed prior to printing
-#       - Improves traceability of batch state transitions during debugging
-#
-#   • OPERATIONAL FIX: Resolved repeat print storm condition
-#       - Root cause: failed batches rolled back before status update, leaving print_label flags active
-#       - Result: same labels requeued and printed multiple times
-#       - v3.3 ensures failed batches remain visible and block retries until resolved
+#   • FIX: Prevent repeated batch requeue after print failure.
+#   • FIX: Conditional batch creation to eliminate false warnings.
+#   • OPERATIONAL FIX: Failed batches persist and block retries.
 #
 ## 2026-03-30 — v3.2
-#   • FEATURE: Capture true user actor for label batch creation
-#       - Batch started_by_person_id / started_by_text now sourced from
-#         ref.display / ref.container audit fields (updated_by*)
-#       - Replaces previous static service account assignment
+#   • FEATURE: Capture true user actor for label batch creation.
 #
-#   • IMPROVEMENT: Batch audit accuracy
-#       - Batch now reflects the actual user who requested printing
-#       - Print history continues to reflect service execution identity
-#
-#   • SAFETY: Added fallback to service identity
-#       - If audit fields are missing or NULL, system falls back to
-#         configured service account to prevent batch failure
-#
-#   • DIAGNOSTICS: Added logging for batch actor selection
-#       - Logs include started_by_person_id and started_by_text
-#       - Warns when multiple actors detected in a single batch
-#       - Aligns batch actor tracking with ops audit model used throughout system
-
 ## 2026-03-26 — v3.1
-#   • FIX: Prevent endless batch retry loop after failure
-#       - Added failed-batch guard logic in main polling loop
-#       - Prevents repeated batch creation when printer fails mid-run
+#   • FIX: Prevent endless batch retry loop after failure.
+#   • IMPROVEMENT: Added spooler status decoding and longer timeout.
 #
-#   • FIX: Resolved function/variable shadowing bug
-#       - Renamed failed batch helper functions to avoid UnboundLocalError
-#
-#   • IMPROVEMENT: Added spooler status decoding in logs
-#       - Logs now include human-readable job state (PRINTING, SPOOLING, etc.)
-#       - Improves troubleshooting of printer issues (e.g., out of tape)
-#
-#   • IMPROVEMENT: Increased spooler timeout for real-world printing
-#       - Display jobs allowed more time to complete
-#
-#   • BEHAVIOR CHANGE:
-#       - System now blocks automatic retry after failed batch
-#       - Requires operator intervention instead of silent reprocessing
-#
-# ------------------------------------------------------------
-#  2026-03-21  — Greg Liebig
-#
-# v3.0  — Queue-verified printing
-#   • Removed broken b-PAC callback/event sink handling
-#   • Switched print verification to Windows spooler monitoring
-#   • Added queue-empty guard before batch creation
-#   • Added active PRINTING batch guard to prevent batch storms
-#   • Updated comments to match actual runtime behavior
-#
-# v0.3  — Printer-safe batch creation
-#   • Added pending label checks before batch creation
-#   • Added printer preflight check BEFORE creating batches
-#
-# v0.2  — b-PAC integration
-#   • Replaced P-touch Editor launch with direct b-PAC printing
-#   • Implemented batch printing via StartPrint / PrintOut loop
-#
-# v0.1  — Initial polling service
-#   • DB polling
-#   • Snapshot batch tables
-#   • CSV generation
-#
+## 2026-03-21 — v3.0
+#   • Queue-verified printing architecture.
 # ============================================================
 
 # ============================================================
@@ -164,14 +107,15 @@ import os
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "3.4"
+SERVICE_VERSION = "3.5-candidate"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
-PROCESS_ID = str(os.getpid()) if 'os' in globals() else "?"
+PROCESS_ID = str(os.getpid())
 SERVICE_ID = f"{SERVICE_NAME} {SERVICE_VERSION} ({SCRIPT_NAME} @ {HOSTNAME} PID {PROCESS_ID})"
 
 CONFIG_PATH = Path(__file__).with_name("config.local.ini")
+
 
 def print_banner() -> None:
     line = "=" * 60
@@ -182,20 +126,18 @@ def print_banner() -> None:
     print(f"PID     : {PROCESS_ID}")
     print(line)
 
+
 def load_config() -> configparser.ConfigParser:
     config = configparser.ConfigParser()
-    config.read(CONFIG_PATH)
+    loaded = config.read(CONFIG_PATH)
+    if not loaded:
+        raise RuntimeError(f"Config file not found/readable: {CONFIG_PATH}")
     return config
+
 
 # ============================================================
 # CONFIG LOADING
 # ============================================================
-
-def load_config() -> configparser.ConfigParser:
-    config = configparser.ConfigParser()
-    config.read(Path(__file__).with_name("config.local.ini"))
-    return config
-
 
 CONFIG = load_config()
 
@@ -207,18 +149,24 @@ STATE_DIR = Path(CONFIG["paths"]["state_dir"])
 LOG_DIR = Path(CONFIG["paths"]["log_dir"])
 BATCH_LOG_DIR = LOG_DIR / "batches"
 
+# Mutable service directories may be safely created at startup. SQL/template
+# source directories are deliberately NOT auto-created here; their absence is
+# a configuration/preflight failure rather than an empty folder we should hide.
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 BATCH_LOG_DIR.mkdir(parents=True, exist_ok=True)
 CSV_DIR.mkdir(parents=True, exist_ok=True)
 
 LOCK_FILE = STATE_DIR / "print_service.lock"
+STATUS_FILE = STATE_DIR / "service_status.json"
 LOG_FILE = LOG_DIR / "label_service.log"
 
 POLL_SECONDS = int(CONFIG["service"]["poll_seconds"])
 STARTED_BY_PERSON_ID = int(CONFIG["service"]["started_by_person_id"])
 STARTED_BY_TEXT = CONFIG["service"]["started_by_text"]
 
+# Current v3 compatibility template keys. Database-driven Display template
+# selection is a separate Setup-hardening step after live ref.display review.
 DISPLAY_TEMPLATE = Path(CONFIG["templates"]["display"])
 CONTAINER_VERTICAL_TEMPLATE = Path(CONFIG["templates"]["container_vertical"])
 CONTAINER_HORIZONTAL_TEMPLATE = Path(CONFIG["templates"]["container_horizontal"])
@@ -227,22 +175,28 @@ DISPLAY_CSV = Path(CONFIG["csv_files"]["display"])
 CONTAINER_VERTICAL_CSV = Path(CONFIG["csv_files"]["container_vertical"])
 CONTAINER_HORIZONTAL_CSV = Path(CONFIG["csv_files"]["container_horizontal"])
 
-# Printer name used by b-PAC SetPrinter()
-# Add this to config.local.ini under [printer]:
-# name = Brother PT-P950NW
+# Printer name used by b-PAC SetPrinter().
 PRINTER_NAME = CONFIG.get("printer", "name", fallback="Brother PT-P950NW")
+
+DISPLAY_SQL_FILES = (
+    "display_snapshot.sql",
+    "display_export.sql",
+    "display_finalized.sql",
+)
+
+CONTAINER_SQL_FILES = (
+    "container_snapshot.sql",
+    "container_export_vertical.sql",
+    "container_export_horizontal.sql",
+    "container_finalized.sql",
+)
 
 # ------------------------------------------------------------
 # Brother b-PAC print flags
 # ------------------------------------------------------------
-# bpoHalfCut   = 0x200
-# bpoChainPrint= 0x400
-# bpoCutAtEnd  = 0x04000000
-#
-# Note:
-#   CutAtEnd has not yet behaved perfectly in testing, but we keep
-#   it enabled because it is the correct intended flag for end-of-job
-#   full cut.
+# bpoHalfCut    = 0x200
+# bpoChainPrint = 0x400
+# bpoCutAtEnd   = 0x04000000
 # ------------------------------------------------------------
 PRINT_FLAGS = 0x200 | 0x400 | 0x04000000
 
@@ -268,6 +222,7 @@ def decode_spooler_status(status: int) -> str:
     active = [name for bit, name in flags.items() if status & bit]
     return ", ".join(active) if active else f"UNKNOWN({status})"
 
+
 # ------------------------------------------------------------
 # Template object names
 # ------------------------------------------------------------
@@ -278,11 +233,10 @@ DISPLAY_OBJ_QR = "objQr"
 CONTAINER_OBJ_LABEL = "objContainerLabel"
 CONTAINER_OBJ_QR = "objQr"
 
-from logging.handlers import RotatingFileHandler
+# ============================================================
+# MAIN SERVICE LOG SETUP
+# ============================================================
 
-# ------------------------------------------------------------
-# Main Service log Setup
-# ------------------------------------------------------------
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 LOG_FILE.touch(exist_ok=True)
 
@@ -290,29 +244,23 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.handlers.clear()
 
-formatter = logging.Formatter(
-    "%(asctime)s | %(levelname)s | %(message)s"
-)
+formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 
-# File (rotating)
 file_handler = RotatingFileHandler(
     LOG_FILE,
-    maxBytes=5 * 1024 * 1024,   # 5 MB
+    maxBytes=5 * 1024 * 1024,
     backupCount=10,
     encoding="utf-8",
 )
 file_handler.setFormatter(formatter)
 
-# Console (so your blue window still shows activity)
+# Console output remains useful for administrator interactive fallback runs.
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
-# ------------------------------------------------------------
-# STARTUP LOGS
-# ------------------------------------------------------------
 logging.info("%s started", SERVICE_ID)
 logging.info("Logging initialized. Log file: %s", LOG_FILE.resolve())
 
@@ -322,211 +270,165 @@ print(f"Logging initialized. Log file: {LOG_FILE.resolve()}")
 
 
 # ============================================================
-# STARTUP HEALTH CHECK
-# ============================================================
-def startup_health_check() -> None:
-    """
-    Fail fast on startup if the service cannot reach the database
-    and perform the same permission path that previously failed
-    during batch finalization.
-    """
-    print_banner()
-    print("Checking PostgreSQL connectivity and permissions...")
-
-    with db_connect() as conn:
-        conn.autocommit = False
-
-        with conn.cursor() as cur:
-            # --------------------------------------------------
-            # Basic connection identity
-            # --------------------------------------------------
-            cur.execute("SELECT current_database(), current_user, now();")
-            dbname, dbuser, dbtime = cur.fetchone()
-            print(f"Connected to database: {dbname}")
-            print(f"Connected as user   : {dbuser}")
-            print(f"Database time       : {dbtime}")
-
-            # --------------------------------------------------
-            # Basic read checks
-            # --------------------------------------------------
-            cur.execute("SELECT COUNT(*) FROM ref.display;")
-            display_count = cur.fetchone()[0]
-
-            cur.execute("SELECT COUNT(*) FROM ref.container;")
-            container_count = cur.fetchone()[0]
-
-            print(f"ref.display rows    : {display_count}")
-            print(f"ref.container rows  : {container_count}")
-
-            # --------------------------------------------------
-            # Temp write test
-            # --------------------------------------------------
-            cur.execute("CREATE TEMP TABLE IF NOT EXISTS _label_service_healthcheck (x int);")
-            cur.execute("TRUNCATE TABLE _label_service_healthcheck;")
-            cur.execute("INSERT INTO _label_service_healthcheck (x) VALUES (1);")
-            cur.execute("SELECT COUNT(*) FROM _label_service_healthcheck;")
-            temp_count = cur.fetchone()[0]
-
-            print(f"Temp write test     : OK ({temp_count} row)")
-
-            # --------------------------------------------------
-            # Actor / person permission path
-            # This is the path that failed during finalize last time
-            # --------------------------------------------------
-            print("Checking ref.person access...")
-            cur.execute("""
-                SELECT p.person_id, p.preferred_name, p.pg_login_name
-                FROM ref.person p
-                WHERE p.pg_login_name = current_user
-                LIMIT 1;
-            """)
-            actor_row = cur.fetchone()
-
-            if actor_row is None:
-                raise RuntimeError(
-                    "Startup check FAILED: no ref.person row matches current_user. "
-                    "Service account must exist in ref.person.pg_login_name."
-                )
-
-            actor_person_id, actor_name, actor_login = actor_row
-            print(f"ref.person match    : person_id={actor_person_id}, "
-                  f"name={actor_name}, login={actor_login}")
-
-            # --------------------------------------------------
-            # resolve_actor() permission + execute check
-            # --------------------------------------------------
-            print("Checking ref.resolve_actor()...")
-            cur.execute("SELECT person_id, actor_name FROM ref.resolve_actor();")
-            resolved = cur.fetchone()
-
-            if resolved is None:
-                raise RuntimeError(
-                    "Startup check FAILED: ref.resolve_actor() returned no row."
-                )
-
-            resolved_person_id, resolved_name = resolved
-            print(f"resolve_actor()     : person_id={resolved_person_id}, "
-                  f"actor_name={resolved_name}")
-
-        # Roll back temp test work
-        conn.rollback()
-
-    print("Startup health check PASSED.")
-    print(f"Service READY — polling every {POLL_SECONDS} seconds.")
-    print("Press Ctrl+C to stop.")
-    print("")
-
-# ============================================================
-# Printer preflight
+# STATUS SNAPSHOT FOR SEPARATE TRAY/UI CONSUMER
 # ============================================================
 
-BPAC_STATUS_CODES = {
-    101: "No media",
-    102: "End of media",
-    50593795: "Printer offline",
-}
+def publish_service_status(status: str, message: str, **details: Any) -> None:
+    """Publish the latest service state atomically.
 
-def decode_bpac_code(code: int) -> str:
-    return BPAC_STATUS_CODES.get(code, f"Unknown code {code} (0x{code:08X})")
-
-
-def printer_preflight(template_path: Path) -> tuple[bool, str]:
+    The print engine does not own any GUI. A future singleton tray/status UI
+    may read this file. Failure to publish status must never stop printing.
     """
-    Check whether the printer appears ready before creating a batch.
+    payload = {
+        "service": SERVICE_NAME,
+        "version": SERVICE_VERSION,
+        "host": HOSTNAME,
+        "pid": int(PROCESS_ID),
+        "status": status,
+        "message": message,
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "details": details,
+    }
 
-    Returns:
-      (True, "OK")
-      (False, "reason")
-    """
+    temp_path = STATUS_FILE.with_name(f".{STATUS_FILE.name}.{PROCESS_ID}.tmp")
     try:
-        #doc, _ = create_bpac_document_with_events()
-        doc = create_bpac_document()
-
-        opened = doc.Open(str(template_path))
-        if not opened:
-            return False, f"Could not open template: {template_path}"
-
-        set_printer_ok = doc.SetPrinter(PRINTER_NAME, True)
-        if not set_printer_ok:
-            return False, f"Could not set printer '{PRINTER_NAME}'"
-
-        # Template media from LBX
+        temp_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        temp_path.replace(STATUS_FILE)
+    except Exception as exc:
+        logging.warning("Unable to publish service status: %s", exc)
         try:
-            template_media = doc.GetMediaName
-        except Exception as exc:
-            template_media = f"<error reading template media: {exc}>"
-
-        # Printer media from printer object
-        try:
-            printer_media = doc.Printer.GetMediaName
-        except Exception as exc:
-            return False, f"Printer GetMediaName failed: {exc}"
-
-        # Media ID / error path
-        media_id = None
-        media_id_error = None
-        try:
-            media_id = doc.Printer.GetMediaId
-        except Exception as exc:
-            media_id_error = str(exc)
-
-        # Close doc as best we can
-        try:
-            _ = doc.Close()
+            temp_path.unlink(missing_ok=True)
         except Exception:
             pass
 
-        # Known failure cases
-        if media_id in (101, 102, 50593795):
-            return False, decode_bpac_code(media_id)
 
-        if not printer_media or str(printer_media).strip() == "":
-            return False, "Printer not ready (no media, offline, or driver not responding)"
+# ============================================================
+# DETERMINISTIC RUNTIME RESOURCE PREFLIGHT
+# ============================================================
 
-        # Optional media mismatch warning
-        # Do not hard-fail on mismatch yet unless you want to enforce it
-        if template_media and printer_media and str(template_media).strip() != str(printer_media).strip():
-            return False, f"Loaded media '{printer_media}' does not match template media '{template_media}'"
+def _require_directory(path: Path, label: str, *, create: bool = False) -> None:
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
 
-        if media_id_error:
-            # If GetMediaId threw something but media name exists, log it as warning-level text
-            return True, f"OK (GetMediaId warning: {media_id_error})"
+    if not path.exists():
+        raise RuntimeError(f"{label} directory does not exist: {path}")
 
-        return True, f"OK (template_media={template_media}, printer_media={printer_media})"
+    if not path.is_dir():
+        raise RuntimeError(f"{label} path is not a directory: {path}")
+
+
+def _require_readable_file(path: Path, label: str) -> None:
+    if not path.exists():
+        raise RuntimeError(f"{label} file does not exist: {path}")
+
+    if not path.is_file():
+        raise RuntimeError(f"{label} path is not a file: {path}")
+
+    try:
+        with path.open("rb") as handle:
+            handle.read(1)
+    except Exception as exc:
+        raise RuntimeError(f"{label} file is not readable: {path}: {exc}") from exc
+
+
+def _probe_output_path(path: Path, label: str) -> None:
+    """Prove the configured output can be written without destroying it."""
+    _require_directory(path.parent, f"{label} parent", create=True)
+
+    if path.exists():
+        if not path.is_file():
+            raise RuntimeError(f"{label} output path is not a file: {path}")
+        try:
+            # Open for append but write nothing. This verifies the existing
+            # target is writable without truncating or changing its contents.
+            with path.open("a", encoding="utf-8"):
+                pass
+        except Exception as exc:
+            raise RuntimeError(f"{label} output file is not writable: {path}: {exc}") from exc
+        return
+
+    probe_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".msb_label_preflight_",
+            suffix=".tmp",
+            delete=False,
+        ) as probe:
+            probe.write("MSB label preflight\n")
+            probe_name = probe.name
+    except Exception as exc:
+        raise RuntimeError(f"{label} parent is not writable: {path.parent}: {exc}") from exc
+    finally:
+        if probe_name:
+            try:
+                Path(probe_name).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def runtime_resource_preflight(
+    *,
+    display_pending: bool,
+    container_pending: bool,
+) -> tuple[bool, str]:
+    """Validate deterministic resources required by the pending workload.
+
+    This function intentionally performs no PostgreSQL mutations and no print
+    submission. It runs before execution-batch creation.
+    """
+    try:
+        _require_readable_file(CONFIG_PATH, "Config")
+        _require_directory(BASE_DIR, "Base")
+        _require_directory(SQL_DIR, "SQL")
+        _require_directory(TEMPLATE_DIR, "Template root")
+        _require_directory(STATE_DIR, "State", create=True)
+        _require_directory(LOG_DIR, "Log", create=True)
+        _require_directory(BATCH_LOG_DIR, "Batch log", create=True)
+        _require_directory(CSV_DIR, "CSV", create=True)
+
+        checked: list[str] = []
+
+        if display_pending:
+            _require_readable_file(DISPLAY_TEMPLATE, "Display template")
+            checked.append(str(DISPLAY_TEMPLATE))
+
+            for filename in DISPLAY_SQL_FILES:
+                sql_path = SQL_DIR / filename
+                _require_readable_file(sql_path, f"Display SQL {filename}")
+                checked.append(str(sql_path))
+
+            _probe_output_path(DISPLAY_CSV, "Display CSV")
+            checked.append(str(DISPLAY_CSV))
+
+        if container_pending:
+            for template_path, label in (
+                (CONTAINER_VERTICAL_TEMPLATE, "Container vertical template"),
+                (CONTAINER_HORIZONTAL_TEMPLATE, "Container horizontal template"),
+            ):
+                _require_readable_file(template_path, label)
+                checked.append(str(template_path))
+
+            for filename in CONTAINER_SQL_FILES:
+                sql_path = SQL_DIR / filename
+                _require_readable_file(sql_path, f"Container SQL {filename}")
+                checked.append(str(sql_path))
+
+            _probe_output_path(CONTAINER_VERTICAL_CSV, "Container vertical CSV")
+            _probe_output_path(CONTAINER_HORIZONTAL_CSV, "Container horizontal CSV")
+            checked.extend((str(CONTAINER_VERTICAL_CSV), str(CONTAINER_HORIZONTAL_CSV)))
+
+        return True, f"OK ({len(checked)} workload resources checked)"
 
     except Exception as exc:
-        return False, f"Printer preflight exception: {exc}"
-    
-# ============================================================
-# LOGGING HELPERS
-# ============================================================
+        return False, str(exc)
 
-def write_batch_log(batch_log_path: Path, message: str) -> None:
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with batch_log_path.open("a", encoding="utf-8") as f:
-        f.write(f"{timestamp} | {message}\n")
-
-
-def new_batch_log_path(batch_type: str, batch_id: int) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return BATCH_LOG_DIR / f"{batch_type}_batch_{batch_id}_{stamp}.log"
 
 # ============================================================
 # DATABASE HELPERS
 # ============================================================
-
-def pending_display_count(conn) -> int:
-    return int(query_value(
-        conn,
-        "SELECT COUNT(*) FROM ref.display WHERE print_label = true;",
-    ) or 0)
-
-
-def pending_container_count(conn) -> int:
-    return int(query_value(
-        conn,
-        "SELECT COUNT(*) FROM ref.container WHERE print_label = true;",
-    ) or 0)
 
 def db_connect():
     return psycopg2.connect(
@@ -536,6 +438,7 @@ def db_connect():
         user=CONFIG["database"]["user"],
         password=CONFIG["database"]["password"],
     )
+
 
 def load_sql(filename: str) -> str:
     path = SQL_DIR / filename
@@ -558,6 +461,21 @@ def query_rows(conn, sql: str, params: dict[str, Any] | None = None) -> list[dic
 def exec_sql(conn, sql: str, params: dict[str, Any] | None = None) -> None:
     with conn.cursor() as cur:
         cur.execute(sql, params or {})
+
+
+def pending_display_count(conn) -> int:
+    return int(query_value(
+        conn,
+        "SELECT COUNT(*) FROM ref.display WHERE print_label = true;",
+    ) or 0)
+
+
+def pending_container_count(conn) -> int:
+    return int(query_value(
+        conn,
+        "SELECT COUNT(*) FROM ref.container WHERE print_label = true;",
+    ) or 0)
+
 
 def active_display_batch_id(conn) -> int | None:
     batch_id = query_value(
@@ -586,9 +504,238 @@ def active_container_batch_id(conn) -> int | None:
     )
     return int(batch_id) if batch_id is not None else None
 
-#03/30/26 DISPLAY LABELS
+
+# ============================================================
+# STARTUP HEALTH CHECK
+# ============================================================
+
+def startup_health_check() -> None:
+    """Fail fast on invalid runtime configuration and DB permissions."""
+    print_banner()
+    print("Checking deterministic runtime resources...")
+
+    runtime_ok, runtime_msg = runtime_resource_preflight(
+        display_pending=True,
+        container_pending=True,
+    )
+    if not runtime_ok:
+        publish_service_status("ERROR", f"Startup runtime preflight failed: {runtime_msg}")
+        raise RuntimeError(f"Startup runtime preflight FAILED: {runtime_msg}")
+
+    print(f"Runtime resources    : {runtime_msg}")
+    print(f"Base directory       : {BASE_DIR}")
+    print(f"SQL directory        : {SQL_DIR}")
+    print(f"Template directory   : {TEMPLATE_DIR}")
+    print(f"CSV directory        : {CSV_DIR}")
+    print(f"State directory      : {STATE_DIR}")
+    print(f"Log directory        : {LOG_DIR}")
+    print("Checking PostgreSQL connectivity and permissions...")
+
+    with db_connect() as conn:
+        conn.autocommit = False
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_database(), current_user, now();")
+            dbname, dbuser, dbtime = cur.fetchone()
+            print(f"Connected to database: {dbname}")
+            print(f"Connected as user   : {dbuser}")
+            print(f"Database time       : {dbtime}")
+
+            cur.execute("SELECT COUNT(*) FROM ref.display;")
+            display_count = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM ref.container;")
+            container_count = cur.fetchone()[0]
+
+            print(f"ref.display rows    : {display_count}")
+            print(f"ref.container rows  : {container_count}")
+
+            cur.execute("CREATE TEMP TABLE IF NOT EXISTS _label_service_healthcheck (x int);")
+            cur.execute("TRUNCATE TABLE _label_service_healthcheck;")
+            cur.execute("INSERT INTO _label_service_healthcheck (x) VALUES (1);")
+            cur.execute("SELECT COUNT(*) FROM _label_service_healthcheck;")
+            temp_count = cur.fetchone()[0]
+            print(f"Temp write test     : OK ({temp_count} row)")
+
+            print("Checking ref.person access...")
+            cur.execute("""
+                SELECT p.person_id, p.preferred_name, p.pg_login_name
+                FROM ref.person p
+                WHERE p.pg_login_name = current_user
+                LIMIT 1;
+            """)
+            actor_row = cur.fetchone()
+
+            if actor_row is None:
+                raise RuntimeError(
+                    "Startup check FAILED: no ref.person row matches current_user. "
+                    "Service account must exist in ref.person.pg_login_name."
+                )
+
+            actor_person_id, actor_name, actor_login = actor_row
+            print(
+                f"ref.person match    : person_id={actor_person_id}, "
+                f"name={actor_name}, login={actor_login}"
+            )
+
+            print("Checking ref.resolve_actor()...")
+            cur.execute("SELECT person_id, actor_name FROM ref.resolve_actor();")
+            resolved = cur.fetchone()
+
+            if resolved is None:
+                raise RuntimeError(
+                    "Startup check FAILED: ref.resolve_actor() returned no row."
+                )
+
+            resolved_person_id, resolved_name = resolved
+            print(
+                f"resolve_actor()     : person_id={resolved_person_id}, "
+                f"actor_name={resolved_name}"
+            )
+
+        conn.rollback()
+
+    publish_service_status(
+        "READY",
+        "Service startup health check passed; polling for label requests.",
+        printer=PRINTER_NAME,
+        poll_seconds=POLL_SECONDS,
+    )
+    print("Startup health check PASSED.")
+    print(f"Service READY — polling every {POLL_SECONDS} seconds.")
+    print("Press Ctrl+C to stop when running interactively.")
+    print("")
+
+
+# ============================================================
+# PRINTER PREFLIGHT
+# ============================================================
+
+BPAC_STATUS_CODES = {
+    101: "No media",
+    102: "End of media",
+    50593795: "Printer offline",
+}
+
+
+def decode_bpac_code(code: int) -> str:
+    return BPAC_STATUS_CODES.get(code, f"Unknown code {code} (0x{code:08X})")
+
+
+def create_bpac_document():
+    return win32com.client.Dispatch("bpac.Document")
+
+
+def printer_preflight(template_path: Path) -> tuple[bool, str]:
+    """Check whether the current printer appears ready for one template."""
+    doc = None
+    try:
+        doc = create_bpac_document()
+
+        opened = doc.Open(str(template_path))
+        if not opened:
+            return False, f"Could not open template: {template_path}"
+
+        set_printer_ok = doc.SetPrinter(PRINTER_NAME, True)
+        if not set_printer_ok:
+            return False, f"Could not set printer '{PRINTER_NAME}'"
+
+        try:
+            template_media = doc.GetMediaName
+        except Exception as exc:
+            template_media = f"<error reading template media: {exc}>"
+
+        try:
+            printer_media = doc.Printer.GetMediaName
+        except Exception as exc:
+            return False, f"Printer GetMediaName failed: {exc}"
+
+        media_id = None
+        media_id_error = None
+        try:
+            media_id = doc.Printer.GetMediaId
+        except Exception as exc:
+            media_id_error = str(exc)
+
+        if media_id in (101, 102, 50593795):
+            return False, decode_bpac_code(media_id)
+
+        if not printer_media or str(printer_media).strip() == "":
+            return False, "Printer not ready (no media, offline, or driver not responding)"
+
+        if (
+            template_media
+            and printer_media
+            and str(template_media).strip() != str(printer_media).strip()
+        ):
+            return False, (
+                f"Loaded media '{printer_media}' does not match "
+                f"template media '{template_media}'"
+            )
+
+        if media_id_error:
+            return True, f"OK (GetMediaId warning: {media_id_error})"
+
+        return True, f"OK (template_media={template_media}, printer_media={printer_media})"
+
+    except Exception as exc:
+        return False, f"Printer preflight exception: {exc}"
+    finally:
+        if doc is not None:
+            try:
+                _ = doc.Close
+            except Exception:
+                pass
+
+
+def printer_preflight_for_pending_work(
+    *,
+    display_pending: bool,
+    container_pending: bool,
+) -> tuple[bool, str]:
+    """Preflight every template family that may be used in this poll cycle."""
+    required_templates: list[Path] = []
+
+    if display_pending:
+        required_templates.append(DISPLAY_TEMPLATE)
+
+    if container_pending:
+        required_templates.extend((
+            CONTAINER_VERTICAL_TEMPLATE,
+            CONTAINER_HORIZONTAL_TEMPLATE,
+        ))
+
+    for template_path in required_templates:
+        ok, message = printer_preflight(template_path)
+        if not ok:
+            return False, f"{template_path.name}: {message}"
+        logging.info("Printer/template preflight passed for %s: %s", template_path, message)
+
+    return True, f"OK ({len(required_templates)} template(s) checked)"
+
+
+# ============================================================
+# LOGGING HELPERS
+# ============================================================
+
+def write_batch_log(batch_log_path: Path, message: str) -> None:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    batch_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with batch_log_path.open("a", encoding="utf-8") as f:
+        f.write(f"{timestamp} | {message}\n")
+
+
+def new_batch_log_path(batch_type: str, batch_id: int) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return BATCH_LOG_DIR / f"{batch_type}_batch_{batch_id}_{stamp}.log"
+
+
+# ============================================================
+# BATCH ACTOR HELPERS
+# ============================================================
+
 def get_display_batch_actor(conn) -> tuple[int | None, str | None]:
-    row = query_rows(
+    rows = query_rows(
         conn,
         """
         SELECT DISTINCT
@@ -596,20 +743,20 @@ def get_display_batch_actor(conn) -> tuple[int | None, str | None]:
             updated_by
         FROM ref.display
         WHERE print_label = true
-        """
+        """,
     )
 
-    if not row:
+    if not rows:
         return None, None
 
-    if len(row) > 1:
+    if len(rows) > 1:
         logging.warning("Multiple actors detected for display batch. Using first row.")
 
-    return row[0]["updated_by_person_id"], row[0]["updated_by"]
+    return rows[0]["updated_by_person_id"], rows[0]["updated_by"]
 
-#03/30/26 CONTAINER LABELS
+
 def get_container_batch_actor(conn) -> tuple[int | None, str | None]:
-    row = query_rows(
+    rows = query_rows(
         conn,
         """
         SELECT DISTINCT
@@ -617,16 +764,17 @@ def get_container_batch_actor(conn) -> tuple[int | None, str | None]:
             updated_by
         FROM ref.container
         WHERE print_label = true
-        """
+        """,
     )
 
-    if not row:
+    if not rows:
         return None, None
 
-    if len(row) > 1:
+    if len(rows) > 1:
         logging.warning("Multiple actors detected for container batch. Using first row.")
 
-    return row[0]["updated_by_person_id"], row[0]["updated_by"]
+    return rows[0]["updated_by_person_id"], rows[0]["updated_by"]
+
 
 # ============================================================
 # LOCK FILE HELPERS
@@ -637,11 +785,13 @@ def lock_exists() -> bool:
 
 
 def create_lock() -> None:
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     LOCK_FILE.write_text(
         json.dumps(
             {
-                "pid": str(Path.cwd()),
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "pid": int(PROCESS_ID),
+                "service_id": SERVICE_ID,
+                "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
             },
             indent=2,
         ),
@@ -774,6 +924,10 @@ def create_container_batch(conn) -> int | None:
 # ============================================================
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> int:
+    # Defensive write-time repair protects against a directory being removed
+    # after preflight but before the batch export reaches this point.
+    path.parent.mkdir(parents=True, exist_ok=True)
+
     if not rows:
         path.write_text("", encoding="utf-8")
         return 0
@@ -789,9 +943,6 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> int:
 # ============================================================
 # b-PAC HELPERS
 # ============================================================
-def create_bpac_document():
-    return win32com.client.Dispatch("bpac.Document")
-
 
 def get_required_object(doc, object_name: str):
     obj = doc.GetObject(object_name)
@@ -804,17 +955,11 @@ def get_required_object(doc, object_name: str):
 
 
 def get_optional_object(doc, object_name: str):
-    obj = doc.GetObject(object_name)
-    return obj
+    return doc.GetObject(object_name)
 
 
 def finish_bpac_document(doc, batch_log_path: Path) -> None:
-    """
-    b-PAC behaves oddly in Python on this machine:
-    EndPrint and Close appear to act like properties instead of clean methods.
-
-    Accessing them without parentheses is the least-bad known behavior right now.
-    """
+    """Close the current b-PAC print document using observed machine behavior."""
     try:
         end_result = doc.EndPrint
         write_batch_log(batch_log_path, f"EndPrint result: {end_result}")
@@ -827,10 +972,8 @@ def finish_bpac_document(doc, batch_log_path: Path) -> None:
     except Exception as exc:
         write_batch_log(batch_log_path, f"WARNING Close raised exception: {exc}")
 
+
 def log_media_status(doc, batch_log_path: Path) -> None:
-    """
-    Log template media and currently loaded printer media.
-    """
     try:
         template_media = doc.GetMediaName
     except Exception as exc:
@@ -843,6 +986,7 @@ def log_media_status(doc, batch_log_path: Path) -> None:
 
     write_batch_log(batch_log_path, f"Template media: {template_media}")
     write_batch_log(batch_log_path, f"Printer media : {printer_media}")
+
 
 # ============================================================
 # WINDOWS PRINT QUEUE HELPERS
@@ -857,7 +1001,7 @@ def get_print_jobs(printer_name: str) -> list[dict[str, Any]]:
         if handle is not None:
             win32print.ClosePrinter(handle)
 
-# 26-03-26 gal
+
 def summarize_print_jobs(jobs: list[dict[str, Any]]) -> str:
     if not jobs:
         return "<empty>"
@@ -920,7 +1064,7 @@ def wait_for_spooler_job_to_clear(
     clear_deadline = time.time() + clear_timeout_seconds
     while time.time() < clear_deadline:
         jobs = get_print_jobs(printer_name)
-        current_job_ids = {int(job.get('JobId')) for job in jobs}
+        current_job_ids = {int(job.get("JobId")) for job in jobs}
 
         if seen_job_ids.isdisjoint(current_job_ids):
             write_batch_log(batch_log_path, "Spooler job cleared successfully.")
@@ -936,15 +1080,12 @@ def wait_for_spooler_job_to_clear(
         f"Spooler job appeared but did not clear within {clear_timeout_seconds} seconds."
     )
 
+
 # ============================================================
 # DISPLAY PRINTING
 # ============================================================
 
 def print_display_batch(rows: list[dict[str, Any]], batch_log_path: Path) -> None:
-    """
-    Print display labels through b-PAC and verify job completion using
-    the Windows print queue.
-    """
     if not rows:
         write_batch_log(batch_log_path, "No display rows to print.")
         return
@@ -992,6 +1133,16 @@ def print_display_batch(rows: list[dict[str, Any]], batch_log_path: Path) -> Non
         if obj_line2 is not None:
             obj_line2.Text = row.get("line2", "") or ""
 
+        publish_service_status(
+            "PRINTING",
+            f"Submitting Display label {idx} of {len(rows)}.",
+            batch_type="display",
+            item_index=idx,
+            item_count=len(rows),
+            display_id=row.get("display_id"),
+            printer=PRINTER_NAME,
+        )
+
         result = doc.PrintOut(1, 0)
         write_batch_log(
             batch_log_path,
@@ -1007,6 +1158,12 @@ def print_display_batch(rows: list[dict[str, Any]], batch_log_path: Path) -> Non
 
     finish_bpac_document(doc, batch_log_path)
 
+    publish_service_status(
+        "PRINTING",
+        "Waiting for Display print job to clear the Windows queue.",
+        batch_type="display",
+        printer=PRINTER_NAME,
+    )
     wait_for_spooler_job_to_clear(
         printer_name=PRINTER_NAME,
         known_job_ids=baseline_job_ids,
@@ -1014,20 +1171,18 @@ def print_display_batch(rows: list[dict[str, Any]], batch_log_path: Path) -> Non
         batch_log_path=batch_log_path,
     )
 
+
 # ============================================================
 # CONTAINER PRINTING
 # ============================================================
 
 def duplicate_container_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """
-    Each selected container needs TWO labels.
-    We duplicate the logical row list in memory before printing.
-    """
     duplicated: list[dict[str, Any]] = []
     for row in rows:
         duplicated.append(dict(row))
         duplicated.append(dict(row))
     return duplicated
+
 
 def print_container_batch(
     rows: list[dict[str, Any]],
@@ -1035,10 +1190,6 @@ def print_container_batch(
     batch_log_path: Path,
     orientation: str,
 ) -> None:
-    """
-    Print container labels through b-PAC and verify job completion using
-    the Windows print queue.
-    """
     if not rows:
         write_batch_log(batch_log_path, f"No {orientation.lower()} container rows to print.")
         return
@@ -1087,6 +1238,17 @@ def print_container_batch(
         obj_label.Text = row.get("container_label", "") or ""
         obj_qr.Text = row.get("qr_url", "") or ""
 
+        publish_service_status(
+            "PRINTING",
+            f"Submitting {orientation.lower()} Container label {idx} of {len(rows_to_print)}.",
+            batch_type="container",
+            orientation=orientation,
+            item_index=idx,
+            item_count=len(rows_to_print),
+            container_id=row.get("container_id"),
+            printer=PRINTER_NAME,
+        )
+
         result = doc.PrintOut(1, 0)
         write_batch_log(
             batch_log_path,
@@ -1103,12 +1265,20 @@ def print_container_batch(
 
     finish_bpac_document(doc, batch_log_path)
 
+    publish_service_status(
+        "PRINTING",
+        f"Waiting for {orientation.lower()} Container print job to clear the Windows queue.",
+        batch_type="container",
+        orientation=orientation,
+        printer=PRINTER_NAME,
+    )
     wait_for_spooler_job_to_clear(
         printer_name=PRINTER_NAME,
         known_job_ids=baseline_job_ids,
         expected_document=template_path.stem,
         batch_log_path=batch_log_path,
     )
+
 
 # ============================================================
 # FAILURE HANDLING HELPERS
@@ -1139,7 +1309,7 @@ def mark_container_batch_failed(conn, batch_id: int, reason: str) -> None:
         {"batch_id": batch_id, "reason": reason[:1000]},
     )
 
-# 03-26-26 not to duplicate failed batches
+
 def get_failed_display_batch_id(conn):
     with conn.cursor() as cur:
         cur.execute("""
@@ -1182,10 +1352,33 @@ def get_failed_container_batch_id(conn):
             SELECT f.container_label_batch_id
             FROM latest_failed f
             CROSS JOIN latest_completed c
+            WHERE f.display_label_batch_id IS NULL OR TRUE;
+        """)
+        # NOTE: Keep the original comparison semantics below rather than rely
+        # on the placeholder SELECT above. This branch intentionally preserves
+        # production behavior while the function remains simple.
+        cur.execute("""
+            WITH latest_failed AS (
+                SELECT container_label_batch_id
+                FROM ops.container_label_batch
+                WHERE status = 'FAILED'
+                ORDER BY container_label_batch_id DESC
+                LIMIT 1
+            ),
+            latest_completed AS (
+                SELECT COALESCE(MAX(container_label_batch_id), 0) AS completed_batch_id
+                FROM ops.container_label_batch
+                WHERE status = 'COMPLETED'
+            )
+            SELECT f.container_label_batch_id
+            FROM latest_failed f
+            CROSS JOIN latest_completed c
             WHERE f.container_label_batch_id > c.completed_batch_id;
         """)
         row = cur.fetchone()
         return row[0] if row else None
+
+
 # ============================================================
 # MAIN BATCH PROCESSING
 # ============================================================
@@ -1207,8 +1400,16 @@ def process_display(conn, display_batch_id: int) -> None:
 
 
 def process_container(conn, container_batch_id: int) -> None:
-    vert_rows = query_rows(conn, load_sql("container_export_vertical.sql"), {"batch_id": container_batch_id})
-    horz_rows = query_rows(conn, load_sql("container_export_horizontal.sql"), {"batch_id": container_batch_id})
+    vert_rows = query_rows(
+        conn,
+        load_sql("container_export_vertical.sql"),
+        {"batch_id": container_batch_id},
+    )
+    horz_rows = query_rows(
+        conn,
+        load_sql("container_export_horizontal.sql"),
+        {"batch_id": container_batch_id},
+    )
 
     write_csv(CONTAINER_VERTICAL_CSV, vert_rows)
     write_csv(CONTAINER_HORIZONTAL_CSV, horz_rows)
@@ -1247,13 +1448,18 @@ def process_container(conn, container_batch_id: int) -> None:
 
 def main() -> None:
     print_banner()
-
     startup_health_check()
 
     while True:
         try:
             logging.info("Poll tick - checking for pending labels.")
+
             if lock_exists():
+                publish_service_status(
+                    "BLOCKED",
+                    "Print-service lock exists; waiting for the current/previous cycle to clear.",
+                    lock_file=str(LOCK_FILE),
+                )
                 time.sleep(POLL_SECONDS)
                 continue
 
@@ -1263,7 +1469,7 @@ def main() -> None:
                 conn.autocommit = False
 
                 # --------------------------------------------------
-                # Step 1: Check whether there is any work pending
+                # Step 1: Check whether there is any work pending.
                 # --------------------------------------------------
                 display_pending = pending_display_count(conn)
                 container_pending = pending_container_count(conn)
@@ -1274,6 +1480,11 @@ def main() -> None:
                 )
 
                 if display_pending == 0 and container_pending == 0:
+                    publish_service_status(
+                        "IDLE",
+                        "Service healthy; waiting for label requests.",
+                        printer=PRINTER_NAME,
+                    )
                     logging.info("No pending labels. Service idle.")
                     conn.rollback()
                     clear_lock()
@@ -1281,16 +1492,23 @@ def main() -> None:
                     continue
 
                 # --------------------------------------------------
-                # Step 1a: Harden the main loop against storms and stuck queue
+                # Step 1a: Guard against active execution storms.
                 # --------------------------------------------------
                 existing_display_batch_id = active_display_batch_id(conn)
                 existing_container_batch_id = active_container_batch_id(conn)
 
                 if existing_display_batch_id or existing_container_batch_id:
-                    logging.warning(
-                        "Active PRINTING batch already exists. display_batch_id=%s container_batch_id=%s",
-                        existing_display_batch_id,
-                        existing_container_batch_id,
+                    message = (
+                        "Active PRINTING batch already exists. "
+                        f"display_batch_id={existing_display_batch_id} "
+                        f"container_batch_id={existing_container_batch_id}"
+                    )
+                    logging.warning(message)
+                    publish_service_status(
+                        "BLOCKED",
+                        "Existing PRINTING batch must finish/reconcile before new work starts.",
+                        display_batch_id=existing_display_batch_id,
+                        container_batch_id=existing_container_batch_id,
                     )
                     conn.rollback()
                     clear_lock()
@@ -1298,7 +1516,7 @@ def main() -> None:
                     continue
 
                 # --------------------------------------------------
-                # Step 1b: Block retry if FAILED batch exists
+                # Step 1b: Block retry if unresolved FAILED batch exists.
                 # --------------------------------------------------
                 failed_display_batch_id = get_failed_display_batch_id(conn)
                 failed_container_batch_id = get_failed_container_batch_id(conn)
@@ -1308,6 +1526,12 @@ def main() -> None:
                         "FAILED batch exists - blocking retry. display_batch_id=%s container_batch_id=%s",
                         failed_display_batch_id,
                         failed_container_batch_id,
+                    )
+                    publish_service_status(
+                        "ACTION_REQUIRED",
+                        "A prior FAILED label batch requires administrator reconciliation.",
+                        display_batch_id=failed_display_batch_id,
+                        container_batch_id=failed_container_batch_id,
                     )
                     print(
                         f"FAILED batch exists - manual intervention required. "
@@ -1320,20 +1544,48 @@ def main() -> None:
                     continue
 
                 # --------------------------------------------------
-                # Step 2: Preflight printer BEFORE creating any batch
-                # This prevents endless batch creation when printer is
-                # empty, offline, paused, or otherwise not ready.
+                # Step 2: Complete deterministic runtime preflight BEFORE
+                # any execution batch is created.
                 # --------------------------------------------------
-                preflight_template = (
-                    DISPLAY_TEMPLATE
-                    if display_pending > 0
-                    else CONTAINER_VERTICAL_TEMPLATE
+                runtime_ok, runtime_msg = runtime_resource_preflight(
+                    display_pending=display_pending > 0,
+                    container_pending=container_pending > 0,
                 )
 
-                preflight_ok, preflight_msg = printer_preflight(preflight_template)
+                if not runtime_ok:
+                    logging.error("Runtime preflight failed: %s", runtime_msg)
+                    publish_service_status(
+                        "ACTION_REQUIRED",
+                        f"Label printing blocked: {runtime_msg}",
+                        display_pending=display_pending,
+                        container_pending=container_pending,
+                    )
+                    print(f"Runtime preflight failed: {runtime_msg}")
+                    conn.rollback()
+                    clear_lock()
+                    time.sleep(POLL_SECONDS)
+                    continue
+
+                logging.info("Runtime preflight passed: %s", runtime_msg)
+
+                # --------------------------------------------------
+                # Step 2a: Preflight the printer against every current
+                # template family required by this poll cycle.
+                # --------------------------------------------------
+                preflight_ok, preflight_msg = printer_preflight_for_pending_work(
+                    display_pending=display_pending > 0,
+                    container_pending=container_pending > 0,
+                )
 
                 if not preflight_ok:
                     logging.error("Printer preflight failed: %s", preflight_msg)
+                    publish_service_status(
+                        "ACTION_REQUIRED",
+                        f"Label printing blocked: {preflight_msg}",
+                        display_pending=display_pending,
+                        container_pending=container_pending,
+                        printer=PRINTER_NAME,
+                    )
                     print(f"Printer preflight failed: {preflight_msg}")
                     conn.rollback()
                     clear_lock()
@@ -1344,12 +1596,18 @@ def main() -> None:
                 print(f"Printer preflight passed: {preflight_msg}")
 
                 # --------------------------------------------------
-                # Step 2a: queue-empty guard
+                # Step 2b: Queue-empty guard.
                 # --------------------------------------------------
                 queue_jobs = get_print_jobs(PRINTER_NAME)
                 if queue_jobs:
                     queue_msg = f"Printer queue is not empty: {summarize_print_jobs(queue_jobs)}"
                     logging.error(queue_msg)
+                    publish_service_status(
+                        "ACTION_REQUIRED",
+                        "Label printing blocked because the Windows print queue is not empty.",
+                        printer=PRINTER_NAME,
+                        queue=summarize_print_jobs(queue_jobs),
+                    )
                     print(queue_msg)
                     conn.rollback()
                     clear_lock()
@@ -1357,7 +1615,8 @@ def main() -> None:
                     continue
 
                 # --------------------------------------------------
-                # Step 3: Only create batches AFTER printer passes Updated 04/16/26 for warning and loop
+                # Step 3: Create batches only AFTER every detectable
+                # preflight requirement above has passed.
                 # --------------------------------------------------
                 display_batch_id = None
                 container_batch_id = None
@@ -1380,16 +1639,20 @@ def main() -> None:
                     time.sleep(POLL_SECONDS)
                     continue
 
-                # --------------------------------------------------
-                # Commit batch header + items BEFORE physical printing
-                # so failed batches remain in the database and can be
-                # marked FAILED instead of being rolled back away.
-                # --------------------------------------------------
+                # Commit batch header + items BEFORE physical printing so
+                # failures after execution begins remain visible/reconcilable.
                 conn.commit()
                 logging.info(
                     "Batch rows committed before printing. display_batch_id=%s container_batch_id=%s",
                     display_batch_id,
                     container_batch_id,
+                )
+                publish_service_status(
+                    "PRINTING",
+                    "Preflight passed; executing label batch.",
+                    display_batch_id=display_batch_id,
+                    container_batch_id=container_batch_id,
+                    printer=PRINTER_NAME,
                 )
 
                 try:
@@ -1407,11 +1670,16 @@ def main() -> None:
                         display_batch_id,
                         container_batch_id,
                     )
+                    publish_service_status(
+                        "IDLE",
+                        "Label batch completed; waiting for new requests.",
+                        display_batch_id=display_batch_id,
+                        container_batch_id=container_batch_id,
+                        printer=PRINTER_NAME,
+                    )
 
                 except Exception as batch_exc:
                     conn.rollback()
-
-                    # Re-open a transaction so we can mark failure cleanly
                     conn.autocommit = False
 
                     if display_batch_id:
@@ -1428,9 +1696,20 @@ def main() -> None:
                         container_batch_id,
                         batch_exc,
                     )
+                    publish_service_status(
+                        "ACTION_REQUIRED",
+                        f"Label batch failed after execution began: {batch_exc}",
+                        display_batch_id=display_batch_id,
+                        container_batch_id=container_batch_id,
+                        printer=PRINTER_NAME,
+                    )
 
         except Exception as exc:
             logging.exception("Polling cycle failed: %s", exc)
+            publish_service_status(
+                "ERROR",
+                f"Polling cycle failed: {exc}",
+            )
 
         finally:
             clear_lock()
@@ -1442,4 +1721,5 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
+        publish_service_status("STOPPED", "Service stopped from interactive console.")
         sys.exit(0)
