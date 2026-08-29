@@ -1,388 +1,467 @@
 # MSB Label Printing System — How It Works
 
-**Author:** Greg Liebig / Engineering Innovations, LLC  
-**Date:** 2026-03-22  
-**System Version:** Label Service v3.x  
+| Document control | Value |
+|---|---|
+| Status | CURRENT ENGINEERING BASELINE — SETUP HARDENING IN PROGRESS |
+| Revision | 2026-08-28 |
+| System | MSB Label Print Service |
+| Current production service | v3.4 |
+| Owner | MSB Label Print Service / PRINT-SERVER engineering |
 
----
+## Purpose
 
-## 🎯 Purpose
+This document explains the current architecture and runtime behavior of the MSB Label Printing System and records the bounded Setup-hardening changes now under engineering review.
 
-This document explains the architecture and runtime behavior of the
-MSB Label Printing System.
+It is intended for administrators, developers, and future maintainers. The physical PRINT-SERVER deployment/startup/recovery procedure is owned by [`Print_Server_Runtime_Runbook.md`](../02_Operational_SOPs/Print_Server_Runtime_Runbook.md).
 
-It is intended for administrators, developers, and future maintainers.
+## Current Production Scope
 
----
+Current production v3.4 prints:
 
----
+- Display labels; and
+- Container labels.
 
-## 🎯 Purpose
+Storage Location/rack printing is not yet a production capability. QL-820NWB testing, final Location media/layout, paper-out/readiness behavior, and accepted Location scan workflow remain pending.
 
-The label system provides automated printing of:
+## System Components
 
-- Display labels
-- Container labels
+### 1. Directus — current request interface
 
-directly from the MSB Production Database via Directus.
+Operators currently:
 
-Operators request labels through the web interface.  
-Printing is performed by a background service connected to the label printer.
+1. search/filter Display or Container rows;
+2. select one or many records;
+3. enable **Print Label**; and
+4. save.
 
----
+This sets:
 
-## 🧩 System Components
+```text
+ref.display.print_label = true
+```
 
-### 1. Directus (User Interface)
+or:
 
-Operators interact with Directus to:
+```text
+ref.container.print_label = true
+```
 
-- Search displays or containers
-- Select items
-- Enable **Print Label**
-- Save changes
+No printing occurs inside Directus. There is no database trigger that starts printing.
 
-This sets a flag in the database.
+### 2. PostgreSQL Production Database
 
-No printing happens inside Directus itself.
+PostgreSQL is authoritative for Display/Container identity and current print-request/batch state.
 
----
+Current source tables:
 
-### 2. PostgreSQL Database
-
-The database stores:
-
-#### Source Tables
-
-
+```text
 ref.display
 ref.container
+```
 
+Current batch tables:
 
-Relevant field:
-
-
-print_label BOOLEAN
-
-
-When set to TRUE, the item is queued for printing.
-
----
-
-#### Batch Tables
-
-Printing is performed through snapshot batches:
-
-
+```text
 ops.display_label_batch
 ops.display_label_batch_item
-
 ops.container_label_batch
 ops.container_label_batch_item
+```
 
-
-These tables:
-
-- Record what was printed
-- Preserve historical audit data
-- Prevent race conditions
-- Allow recovery from failures
-
----
+Snapshot batching preserves the selected print set and prevents source-record changes from silently changing an already-created batch.
 
 ### 3. Label Polling Service
 
+Current production script:
 
-The service is started manually from the office workstation using:
-
-```powershell
-python label_poll_service_v3.py
+```text
+C:\MSB_LabelService\label_poll_service_v3.py
 ```
 
-Runs continuously on the office workstation.
+Current service version:
 
-Responsibilities:
+```text
+3.4
+```
 
-- Poll database every 15 seconds
-- Detect pending print requests
-- Create batch records
-- Generate CSV files
-- Print labels via b-PAC
-- Verify completion through Windows spooler
-- Finalize batches
-- Clear print flags
+The production service runs on the dedicated Beelink host:
 
----
+```text
+PRINT-SERVER
+C:\MSB_LabelService
+```
 
-### 4. Brother P-touch P950NW Printer
+It is started automatically by the Windows Scheduled Task **MSB Label Service**. Manual desktop startup is no longer the normal operating model.
 
-Connected via network.
+The service polls PostgreSQL every 15 seconds and currently performs:
 
-Printing is performed using:
+- pending Display/Container detection;
+- active/FAILED batch guards;
+- current printer/template preflight;
+- snapshot batch creation;
+- CSV generation;
+- Brother b-PAC rendering/submission;
+- Windows spooler verification;
+- batch finalization; and
+- clearing only the snapshot rows that successfully complete.
 
+### 4. Brother PT-P950NW
 
-Brother b-PAC SDK
+The currently accepted production printer for laminated Display and Container labels is:
 
+```text
+Brother PT-P950NW
+```
 
-Templates are stored as `.lbx` files.
+Printing uses Brother b-PAC and `.lbx` templates.
 
----
+A QL-820NWB is available for future non-laminated/QL-media work, but it is not yet part of accepted production Location printing.
 
-## 🔄 End-to-End Workflow
+## Current Runtime Paths
 
-### Step 1 — Operator Requests Labels
+Canonical local service root:
 
-Operator:
+```text
+C:\MSB_LabelService
+```
 
-1. Opens Directus
-2. Navigates to Print Display Labels or Print Container Labels
-3. Selects items
-4. Enables **Print Label**
-5. Saves changes
+Current template root:
 
-Database effect:
+```text
+C:\MSB_LabelService\templates
+```
 
+The intended final template organization is:
 
-print_label = TRUE
+```text
+C:\MSB_LabelService\templates\
+    pt_p950nw\
+    ql_820nwb\
+```
 
+Root-level template copies currently remain during transition because deployed v3.4 still uses explicit paths from `config.local.ini`.
 
----
+The network share `\\print-server\MSB_LabelService` is an administrative view of the same local deployment; the service should use local `C:` paths.
 
-### Step 2 — Service Detects Pending Items
+See the PRINT-SERVER runtime runbook for the controlled path/configuration contract.
 
-Every polling cycle:
+## Current Configuration Model
 
+v3.4 loads template paths from `config.local.ini`; the `.lbx` paths are not literal constants embedded in the Python source.
 
-SELECT COUNT(*) WHERE print_label = TRUE
+The current limitation is the **shape** of the configuration/code: it assumes one global Display template, one Container vertical template, one Container horizontal template, and one global printer name.
 
+Conceptually the current code resolves:
 
-If any items exist, the service begins a batch cycle.
+```text
+DISPLAY_TEMPLATE
+CONTAINER_VERTICAL_TEMPLATE
+CONTAINER_HORIZONTAL_TEMPLATE
+PRINTER_NAME
+```
 
----
+That cannot distinguish a 24 mm Display from a 36 mm Display or choose among multiple runtime printer/template implementations.
 
-### Step 3 — Safety Checks
+## End-to-End Current Workflow
 
-Before printing:
+```text
+Directus
+    -> print_label = true
 
-✔ Database connectivity  
-✔ Printer media compatibility  
-✔ No active PRINTING batch exists  
-✔ Printer queue is empty  
+LabelPrintService poll
+    -> count pending Display/Container rows
+    -> block if active PRINTING or unresolved FAILED batch exists
+    -> current printer/template preflight
+    -> ensure Windows queue is empty
+    -> create snapshot batch
+    -> COMMIT batch header/items
+    -> export batch rows / write CSV
+    -> open LBX through b-PAC
+    -> set printer
+    -> populate objects
+    -> PrintOut loop
+    -> wait for spooler job to appear and clear
+    -> finalize batch
+    -> clear only included print_label flags
+```
 
-If any check fails, printing is deferred.
+## Important Current Preflight Gap
 
----
+The current preflight is **not complete enough**.
 
-### Step 4 — Batch Creation (Snapshot)
+A production failure on 2026-08-27 proved the current sequence can:
 
-A new batch record is created.
+```text
+printer/template preflight passes
+    -> batch is created and committed
+        -> process_display writes runtime CSV
+            -> missing CSV directory/path fails
+                -> committed batch becomes FAILED
+                    -> manual database recovery is required before retry
+```
 
-All pending rows are copied into batch item tables.
+The current `write_csv()` path is therefore downstream of committed batch creation.
 
-This snapshot ensures:
+Setup hardening must change the safety boundary to:
 
-- Stable print set
-- No changes mid-print
-- Audit history
-- Ability to retry safely
+> **Every deterministic prerequisite required for the compatible pending workload must pass before any execution batch header/items are created.**
 
-Original rows remain unchanged until success.
+Required preflight includes at least:
 
----
+- required SQL files readable;
+- runtime CSV/output paths available/writable;
+- selected template exists;
+- b-PAC can open the selected template;
+- required template objects exist;
+- required Windows printer can be selected;
+- correct usable media is loaded;
+- queue is safe/empty;
+- required state/log/runtime directories are valid; and
+- no active/FAILED work blocks safe execution.
 
-### Step 5 — CSV Generation
+`write_csv()` should still defensively ensure its parent exists immediately before writing as race protection.
 
-Batch items are exported to CSV:
+## Display Label Sizes — Setup Requirement
 
+Setup requires two Display identity formats:
 
-csv/display_labels.csv
-csv/container_labels.csv
+```text
+36 mm laminated — current standard
+24 mm laminated — narrow Display format
+```
 
+The current service cannot distinguish these because every pending Display uses the same global `DISPLAY_TEMPLATE`.
 
-This provides:
+The Production Database branch contains a reviewed candidate for a new lookup:
 
-- Debug visibility
-- Backup record of print content
-- Simplified data transfer to print engine
+```text
+ref.label_template
+```
 
----
+with initial codes:
 
-### Step 6 — Label Printing via b-PAC
+```text
+DISPLAY_36MM
+DISPLAY_24MM
+```
 
-The service:
+The eventual relationship from `ref.display` is not implemented yet. Before modifying that existing production table, engineering must inspect the live `ref.display` schema, triggers, grants, dependencies, and Directus metadata.
 
-1. Opens LBX template
-2. Sets printer
-3. Populates template objects
-4. Queues each label
-5. Ends print job
+Existing Displays are intended to default/backfill to 36 mm; selected Displays can then be deliberately changed to 24 mm.
 
-Important:
+## Template Lookup Direction
 
-b-PAC is used only to submit the job.
+The accepted Setup direction separates the machine-local root from the governed relative template path.
 
-It is not trusted to report real completion status.
+Example:
 
----
+```text
+PRINT-SERVER config.local.ini:
+    template_dir = C:\MSB_LabelService\templates
 
-### Step 7 — Spooler Verification
+PostgreSQL:
+    template_relative_path = pt_p950nw/QR_display_labels_2_line_24mm.lbx
 
-After submission, the service monitors the Windows print queue.
+Resolved at runtime:
+    C:\MSB_LabelService\templates\pt_p950nw\QR_display_labels_2_line_24mm.lbx
+```
 
-Success criteria:
+This allows a template location/assignment change without editing Python source while still allowing the entire service installation root to move through one machine-local configuration change.
 
-✔ A new job appears in the queue  
-✔ That job clears within timeout  
+Operators do not choose Windows printers or `.lbx` paths. They select/request the required label format; LabelPrintService resolves the physical implementation and preflight.
 
-Failure criteria:
+## Mixed Pending Display Variants
 
-✖ Job never appears  
-✖ Job remains stuck  
-✖ Printer offline/paused  
+Keeping the existing boolean workflow means 24 mm and 36 mm Displays could be flagged at the same time.
 
-This is the authoritative success signal.
+The revised service must resolve/group pending Displays by effective compatible template/media **before batch creation**.
 
----
+One execution batch may contain only one compatible runtime printer/template/media requirement.
 
-### Step 8 — Batch Finalization
+The service must never:
 
-If printing succeeds:
+- snapshot 24 mm and 36 mm Displays into the same batch;
+- clear `print_label` for a Display that was not included in the completed compatible batch; or
+- create a FAILED cleanup condition merely because incompatible pending requests coexist.
 
-- Batch status → COMPLETED
-- History records written
-- Original rows updated:
+## Current QR Payload and Setup Direction
 
+Current `sql/display_snapshot.sql` constructs:
 
-print_label = FALSE
-printed_by = actor
-printed_at = timestamp
+```text
+https://db.sheboyganlights.org/scan/DISP/<display_id>
+```
 
+and the Container snapshot path similarly constructs a full `/scan/CONT/<container_id>` URL.
 
-If printing fails:
+Existing printed full-URL labels remain supported physical artifacts.
 
-- Batch status → FAILED
-- Original rows remain flagged
-- Operator may retry
+Current Scan input also accepts compact canonical tokens:
 
----
+```text
+DISP:<display_id>
+CONT:<container_id>
+```
 
-## 🧠 Why Snapshot Batching Is Used
+Bluetooth HID testing showed that typing the full URL into Android takes materially longer than the compact token. New/replacement compact QR payloads are therefore part of Setup-hardening acceptance, but must not be documented as production behavior until regression and physical scanner testing pass.
 
-Direct printing from source tables would risk:
+## b-PAC Rendering
 
-- Partial prints
-- Lost data
-- Race conditions
-- Inconsistent output
-- No audit trail
+Current Display template object names:
 
-Batching ensures deterministic behavior.
+```text
+objLine1
+objLine2   optional in code
+objQr
+```
 
----
+Current Container object names:
 
-## ⚠️ Known Limitations
+```text
+objContainerLabel
+objQr
+```
 
-### Tape-Out Detection
+The service populates those objects and calls b-PAC `PrintOut()`.
 
-The printer may accept jobs even without tape installed.
+b-PAC submission success is not treated by itself as proof that the physical label printed.
 
-Software cannot reliably detect empty media.
+## Windows Spooler Verification
 
-Operators must verify tape before printing.
+After submission, the service watches the Windows print queue.
 
----
+The current accepted overall-job success evidence is:
 
-### Cutter Behavior
+- a new relevant spooler job appears; and
+- that job clears within the allowed timeout.
 
-Final full cut may not always occur depending on
-printer settings and flags.
+This protects against several silent submission failures, but it does **not** prove per-label physical completion inside a multi-label b-PAC session.
 
-This does not affect label correctness.
+Do not report item-level labels as physically printed unless later engineering creates evidence that supports that claim.
 
----
+## Container Quantity Behavior
 
-## 🛡️ Safety Features
+Displays print one physical label per selected Display.
 
-The system prevents runaway printing by:
+Containers currently print two physical labels per selected Container. The service duplicates each Container row in memory before rendering.
 
-- Allowing only one PRINTING batch at a time
-- Requiring empty queue before new batch
-- Verifying spooler completion
-- Leaving flags set on failure
-- Avoiding automatic retries
+The database currently stores one logical Container batch item, not two independently checkpointed physical instances.
 
----
+## Failure / Duplicate-Prevention Model
 
-## 📦 Container vs Display Printing
+Current safety features include:
 
-### Display Labels
+- one active PRINTING batch guard;
+- unresolved FAILED batch guard;
+- queue-empty check before batch creation;
+- snapshot batching;
+- batch commit before physical printing so post-batch failures remain visible;
+- leaving source `print_label` flags set on failure; and
+- no blind automatic retry of unresolved FAILED batches.
 
-- One label per display
-- Printed as selected
+Setup preflight hardening must preserve those protections while preventing known deterministic failures from creating a batch in the first place.
 
-### Container Labels
+## PRINT-SERVER Status UI — Accepted Design, Not Yet Deployed
 
-- Two labels per container
-- Rows duplicated internally before printing
+The current unattended service gives normal users almost no local feedback when a label is blocked by a physical condition.
 
----
+The accepted Setup direction is one singleton tray/status UI:
 
-## 🔐 Actor Attribution
+```text
+normal / successful operation
+    -> tray only
+    -> no per-job windows
+    -> no routine popup
 
-Two actors may be recorded:
+action required
+    -> show/restore the same one status window
+    -> explain the condition in operator terms
+       e.g. "24 mm laminated tape required; 36 mm loaded"
 
-- Service actor — who executed the batch
-- Requester actor — who requested labels
+condition corrected
+    -> service safely re-evaluates
+    -> printing may continue automatically
+    -> status returns to tray
+```
 
-(Current implementation may record service actor only.)
+Closing the visible status window must hide the UI, not stop the print engine.
 
----
+The print engine must continue to auto-start through the Scheduled Task. A normal-user manual **Start Print Server** shortcut/button is not part of the accepted workflow.
 
-## 🧪 Debug Logging
+This UI is pending implementation and physical PRINT-SERVER acceptance. Do not describe it as production deployed yet.
 
-Logs stored at:
+## Startup / Singleton Protection
 
+The production Scheduled Task is configured so that if the task is already running, Windows does not start a new instance.
 
-logs/label_service.log
-batches/*.log
+Future Setup hardening should retain that host-level protection and add application-level single-instance protection where practical, particularly because the previous manual-start workflow encouraged users to start the service again when a print was delayed.
 
+## Engineering / Repository Boundary
 
-Batch logs include:
+### Production Database
 
-- Snapshot info
-- Print queue activity
-- Errors
-- Completion status
+Owns:
 
----
+- authoritative asset data;
+- current print request flags and batch/history objects;
+- governed `ref.label_template` implementation when deployed;
+- eventual Display relationship after live-schema review.
 
-## 🧭 Recovery Procedures
+### LabelPrintService
 
-If printing fails:
+Owns:
 
-1. Correct printer issue
-2. Re-enable **Print Label**
-3. Save to retry
+- Python service/runtime;
+- `C:\MSB_LabelService` deployment;
+- machine-local `config.local.ini`;
+- Brother templates;
+- Windows printer queues;
+- template-root/printer runtime mapping;
+- b-PAC;
+- complete physical/runtime preflight;
+- tray/status implementation;
+- spooler/recovery behavior.
 
-Old batches remain for audit.
+### Labeling and Scanning
 
----
+Owns the cross-system label/payload/scan contract, including compatibility of old full-URL labels and accepted compact payload direction.
 
-## 🏁 Summary
+## Current Acceptance Boundary
 
-The MSB Label Printing System is designed for:
+Current production v3.4 remains the accepted runtime until the Setup-hardening branch passes controlled onsite tests.
 
-✔ Reliability  
-✔ Auditability  
-✔ Operator simplicity  
-✔ Failure safety  
-✔ Minimal manual intervention  
+Remote repository work may prepare:
 
-It converts simple UI actions into controlled,
-verifiable physical printing.
+- template lookup/configuration;
+- complete preflight ordering;
+- non-hardware tests;
+- documentation;
+- tray/status implementation candidate; and
+- database integration scripts.
 
----
+Onsite acceptance is still required for:
 
-## 🔄 Revision History
+- 24 mm and 36 mm physical Display printing;
+- actual loaded-media detection;
+- b-PAC printer/template switching;
+- exception/status-window behavior on the Beelink desktop;
+- physical QR/scanner behavior; and
+- any QL-820NWB readiness/media-out behavior.
 
-- v3.0 — Queue-verified printing architecture
+## Related Documentation
+
+- [PRINT-SERVER Runtime Runbook](../02_Operational_SOPs/Print_Server_Runtime_Runbook.md)
+- [Failed Batch and Print Service Recovery](../02_Operational_SOPs/Failed_Batch_and_Print_Service_Recovery.md)
+- [Operator Label Printing](../02_Operational_SOPs/Operator_Label_Printing.md)
+- Production Database Labeling and Scanning engineering documentation
+- LabelPrintService Issue #14
+
+## Revision History
+
+| Date | Change |
+|---|---|
+| 2026-08-28 | Reconciled the document with dedicated PRINT-SERVER Scheduled Task operation, current v3.4 execution order, incomplete preflight boundary, 24/36 mm Display requirement, relative template lookup, mixed-media grouping requirement, compact-QR acceptance direction, and planned tray-only normal status UX. |
+| 2026-04-16 | v3.4 rotating log and explicit pre-print batch-commit logging baseline. |
+| 2026-03-30 | v3.2 requester actor attribution. |
+| 2026-03-26 | v3.1 failed-batch guard / no automatic retry. |
+| 2026-03-21 | v3.0 queue-verified printing architecture. |
