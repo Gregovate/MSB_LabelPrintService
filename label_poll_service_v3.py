@@ -1064,7 +1064,7 @@ def wait_for_spooler_job_to_clear(
     clear_deadline = time.time() + clear_timeout_seconds
     while time.time() < clear_deadline:
         jobs = get_print_jobs(printer_name)
-        current_job_ids = {int(job.get("JobId")) for job in jobs}
+        current_job_ids = {int(job.get('JobId')) for job in jobs}
 
         if seen_job_ids.isdisjoint(current_job_ids):
             write_batch_log(batch_log_path, "Spooler job cleared successfully.")
@@ -1336,27 +1336,6 @@ def get_failed_display_batch_id(conn):
 
 def get_failed_container_batch_id(conn):
     with conn.cursor() as cur:
-        cur.execute("""
-            WITH latest_failed AS (
-                SELECT container_label_batch_id
-                FROM ops.container_label_batch
-                WHERE status = 'FAILED'
-                ORDER BY container_label_batch_id DESC
-                LIMIT 1
-            ),
-            latest_completed AS (
-                SELECT COALESCE(MAX(container_label_batch_id), 0) AS completed_batch_id
-                FROM ops.container_label_batch
-                WHERE status = 'COMPLETED'
-            )
-            SELECT f.container_label_batch_id
-            FROM latest_failed f
-            CROSS JOIN latest_completed c
-            WHERE f.display_label_batch_id IS NULL OR TRUE;
-        """)
-        # NOTE: Keep the original comparison semantics below rather than rely
-        # on the placeholder SELECT above. This branch intentionally preserves
-        # production behavior while the function remains simple.
         cur.execute("""
             WITH latest_failed AS (
                 SELECT container_label_batch_id
