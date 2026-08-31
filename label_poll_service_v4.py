@@ -39,8 +39,8 @@ import os
 #       objLine2
 #       objQr
 #
-#   - Container template object names:
-#       objContainerLabel
+#   - v4 Container generic QR template object names:
+#       objLine1
 #       objQr
 #
 #   - Display labels print one label per row.
@@ -276,11 +276,9 @@ LABEL_FAMILIES = {
     )
 }
 
-# Temporary v4 bridge aliases.
-# These keep the inherited v3 print functions runnable while they are
-# converted to use LABEL_FAMILIES directly.
-PRINTER_NAME = LABEL_FAMILIES["QR_36MM_HORIZONTAL"]["printer"]["queue_name"]
-
+# Accepted v4 Container physical templates.
+# Containers remain 36 mm, with orientation determined by the existing
+# database rule. Both use the generic QR one-line object contract.
 CONTAINER_HORIZONTAL_TEMPLATE = LABEL_FAMILIES["QR_36MM_HORIZONTAL"]["template_1_line"]
 CONTAINER_VERTICAL_TEMPLATE = LABEL_FAMILIES["QR_36MM_VERTICAL"]["template_1_line"]
 
@@ -327,7 +325,7 @@ DISPLAY_OBJ_LINE1 = "objLine1"
 DISPLAY_OBJ_LINE2 = "objLine2"
 DISPLAY_OBJ_QR = "objQr"
 
-CONTAINER_OBJ_LABEL = "objContainerLabel"
+CONTAINER_OBJ_LINE1 = "objLine1"
 CONTAINER_OBJ_QR = "objQr"
 
 from logging.handlers import RotatingFileHandler
@@ -647,6 +645,25 @@ def pending_container_count(conn) -> int:
         conn,
         "SELECT COUNT(*) FROM ref.container WHERE print_label = true;",
     ) or 0)
+
+
+def pending_container_orientations(conn) -> list[dict[str, Any]]:
+    """Return the orientation groups represented by pending Containers."""
+    return query_rows(
+        conn,
+        """
+        SELECT
+            CASE
+                WHEN container_type_id = 1 THEN 'VERTICAL'
+                ELSE 'HORIZONTAL'
+            END AS label_orientation,
+            COUNT(*)::integer AS pending_count
+        FROM ref.container
+        WHERE print_label = true
+        GROUP BY 1
+        ORDER BY 1;
+        """,
+    )
 
 def db_connect():
     return psycopg2.connect(
@@ -1322,79 +1339,118 @@ def print_container_batch(
     orientation: str,
 ) -> None:
     """
-    Print container labels through b-PAC and verify job completion using
-    the Windows print queue.
+    Print Container labels using the accepted generic QR one-line
+    template contract: objLine1 + objQr.
     """
     if not rows:
-        write_batch_log(batch_log_path, f"No {orientation.lower()} container rows to print.")
+        write_batch_log(
+            batch_log_path,
+            f"No {orientation.lower()} Container rows to print.",
+        )
         return
+
+    normalized_orientation = orientation.upper()
+    if normalized_orientation == "VERTICAL":
+        family_code = "QR_36MM_VERTICAL"
+    elif normalized_orientation == "HORIZONTAL":
+        family_code = "QR_36MM_HORIZONTAL"
+    else:
+        raise RuntimeError(
+            f"Unsupported Container label orientation: {orientation}"
+        )
+
+    family = LABEL_FAMILIES[family_code]
+    printer_name = family["printer"]["queue_name"]
 
     rows_to_print = duplicate_container_rows(rows)
     write_batch_log(
         batch_log_path,
-        f"{orientation} container rows duplicated for quantity 2. "
+        f"{normalized_orientation} Container rows duplicated for quantity 2. "
         f"Original={len(rows)} Effective={len(rows_to_print)}",
     )
 
-    baseline_jobs = get_print_jobs(PRINTER_NAME)
-    baseline_job_ids = {int(job.get("JobId")) for job in baseline_jobs}
+    baseline_jobs = get_print_jobs(printer_name)
+    baseline_job_ids = {
+        int(job.get("JobId"))
+        for job in baseline_jobs
+    }
     write_batch_log(
         batch_log_path,
-        f"Baseline queue before {orientation.lower()} print: {summarize_print_jobs(baseline_jobs)}",
+        f"Baseline queue before {normalized_orientation.lower()} Container "
+        f"print: {summarize_print_jobs(baseline_jobs)}",
     )
 
     doc = create_bpac_document()
 
-    write_batch_log(batch_log_path, f"Opening {orientation.lower()} template: {template_path}")
+    write_batch_log(
+        batch_log_path,
+        f"Opening {normalized_orientation.lower()} Container template: "
+        f"{template_path}",
+    )
     opened = doc.Open(str(template_path))
     write_batch_log(batch_log_path, f"Template opened: {opened}")
     if not opened:
-        raise RuntimeError(f"b-PAC could not open the {orientation.lower()} container template.")
+        raise RuntimeError(
+            f"b-PAC could not open the {normalized_orientation.lower()} "
+            "Container template."
+        )
 
-    set_printer_ok = doc.SetPrinter(PRINTER_NAME, True)
-    write_batch_log(batch_log_path, f"SetPrinter('{PRINTER_NAME}') = {set_printer_ok}")
+    set_printer_ok = doc.SetPrinter(printer_name, True)
+    write_batch_log(
+        batch_log_path,
+        f"SetPrinter('{printer_name}') = {set_printer_ok}",
+    )
     if not set_printer_ok:
-        raise RuntimeError(f"b-PAC could not set the {orientation.lower()} container printer.")
+        raise RuntimeError(
+            f"b-PAC could not set the {normalized_orientation.lower()} "
+            "Container printer."
+        )
 
     log_media_status(doc, batch_log_path)
 
-    obj_label = get_required_object(doc, CONTAINER_OBJ_LABEL)
+    obj_line1 = get_required_object(doc, CONTAINER_OBJ_LINE1)
     obj_qr = get_required_object(doc, CONTAINER_OBJ_QR)
 
     write_batch_log(
         batch_log_path,
-        f"Resolved container objects: label={CONTAINER_OBJ_LABEL}, qr={CONTAINER_OBJ_QR}",
+        f"Resolved Container objects: line1={CONTAINER_OBJ_LINE1}, "
+        f"qr={CONTAINER_OBJ_QR}",
     )
 
     doc.StartPrint("", PRINT_FLAGS)
-    write_batch_log(batch_log_path, f"StartPrint called with flags={hex(PRINT_FLAGS)}")
+    write_batch_log(
+        batch_log_path,
+        f"StartPrint called with flags={hex(PRINT_FLAGS)}",
+    )
 
     for idx, row in enumerate(rows_to_print, start=1):
-        obj_label.Text = row.get("container_label", "") or ""
+        obj_line1.Text = row.get("container_label", "") or ""
         obj_qr.Text = row.get("qr_url", "") or ""
 
         result = doc.PrintOut(1, 0)
         write_batch_log(
             batch_log_path,
-            f"Queued {orientation.lower()} container label {idx}/{len(rows_to_print)} "
+            f"Queued {normalized_orientation.lower()} Container label "
+            f"{idx}/{len(rows_to_print)} "
             f"container_id={row.get('container_id')} result={result} "
             f"label={row.get('container_label')}",
         )
 
         if not result:
             raise RuntimeError(
-                f"{orientation} container PrintOut failed on row {idx} "
-                f"container_id={row.get('container_id')}"
+                f"{normalized_orientation} Container PrintOut failed on "
+                f"row {idx} container_id={row.get('container_id')}"
             )
 
     finish_bpac_document(doc, batch_log_path)
 
     wait_for_spooler_job_to_clear(
-        printer_name=PRINTER_NAME,
+        printer_name=printer_name,
         known_job_ids=baseline_job_ids,
         expected_document=template_path.stem,
         batch_log_path=batch_log_path,
     )
+
 
 # ============================================================
 # FAILURE HANDLING HELPERS
@@ -1680,19 +1736,6 @@ def main() -> None:
                 # --------------------------------------------------
                 # Step 2: Resolve exact physical workload BEFORE batch creation
                 # --------------------------------------------------
-                if container_pending > 0 and display_pending == 0:
-                    container_msg = (
-                        "Container labels are pending, but Container rendering "
-                        "is not yet enabled in this v4 checkpoint. "
-                        "No batch was created and requests remain pending."
-                    )
-                    logging.warning(container_msg)
-                    print(container_msg)
-                    conn.rollback()
-                    clear_lock()
-                    time.sleep(POLL_SECONDS)
-                    continue
-
                 selected_family_config = None
                 selected_printer_name = None
                 required_display_templates: list[
@@ -1844,6 +1887,112 @@ def main() -> None:
                             "Container requests untouched."
                         )
 
+                elif container_pending > 0:
+                    container_orientations = pending_container_orientations(conn)
+                    container_printer_name = None
+                    required_container_templates: list[
+                        tuple[Path, tuple[str, ...]]
+                    ] = []
+
+                    for orientation_row in container_orientations:
+                        orientation = str(
+                            orientation_row["label_orientation"]
+                        ).upper()
+
+                        if orientation == "VERTICAL":
+                            container_family_code = "QR_36MM_VERTICAL"
+                        elif orientation == "HORIZONTAL":
+                            container_family_code = "QR_36MM_HORIZONTAL"
+                        else:
+                            raise RuntimeError(
+                                f"Unsupported pending Container orientation: "
+                                f"{orientation}"
+                            )
+
+                        container_family = LABEL_FAMILIES[
+                            container_family_code
+                        ]
+                        template = container_family["template_1_line"]
+                        if template is None:
+                            raise RuntimeError(
+                                f"Container family '{container_family_code}' "
+                                "has no one-line template."
+                            )
+
+                        queue_name = container_family["printer"][
+                            "queue_name"
+                        ]
+                        if container_printer_name is None:
+                            container_printer_name = queue_name
+                        elif container_printer_name != queue_name:
+                            raise RuntimeError(
+                                "Pending Container orientations resolve to "
+                                "different printer queues; refusing to create "
+                                "one execution batch."
+                            )
+
+                        required_container_templates.append(
+                            (
+                                template,
+                                (
+                                    CONTAINER_OBJ_LINE1,
+                                    CONTAINER_OBJ_QR,
+                                ),
+                            )
+                        )
+
+                    container_preflight_failed = False
+                    for template_path, required_objects in (
+                        required_container_templates
+                    ):
+                        preflight_ok, preflight_msg = printer_preflight(
+                            template_path=template_path,
+                            printer_name=container_printer_name,
+                            required_objects=required_objects,
+                        )
+
+                        if not preflight_ok:
+                            logging.error(
+                                "Container preflight failed: %s",
+                                preflight_msg,
+                            )
+                            print(
+                                f"Container preflight failed: "
+                                f"{preflight_msg}"
+                            )
+                            container_preflight_failed = True
+                            break
+
+                        logging.info(
+                            "Container preflight passed: %s",
+                            preflight_msg,
+                        )
+                        print(
+                            f"Container preflight passed: "
+                            f"{preflight_msg}"
+                        )
+
+                    if container_preflight_failed:
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    queue_jobs = get_print_jobs(
+                        container_printer_name
+                    )
+                    if queue_jobs:
+                        queue_msg = (
+                            f"Printer queue is not empty: "
+                            f"{summarize_print_jobs(queue_jobs)}"
+                        )
+                        logging.error(queue_msg)
+                        print(queue_msg)
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
                 # --------------------------------------------------
                 # Step 3: Only create batches AFTER printer passes Updated 04/16/26 for warning and loop
                 # --------------------------------------------------
@@ -1855,12 +2004,8 @@ def main() -> None:
                         conn,
                         int(selected_display_family["label_template_id"]),
                     )
-
-                if container_pending > 0:
-                    logging.info(
-                        "Container batch creation deferred in this v4 checkpoint; "
-                        "pending Container requests remain untouched."
-                    )
+                elif container_pending > 0:
+                    container_batch_id = create_container_batch(conn)
 
                 logging.info(
                     "Batch creation results - display_batch_id=%s container_batch_id=%s",

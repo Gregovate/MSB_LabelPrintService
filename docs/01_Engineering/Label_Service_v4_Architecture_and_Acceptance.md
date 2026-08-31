@@ -149,7 +149,18 @@ VERTICAL Container
 
 The existing database-driven `label_orientation` rule remains. v4 replaces the old Container-specific LBX filenames with the generic physical templates; it does not collapse all Containers to one orientation.
 
+The generic Container QR template object contract is:
+
+```text
+objLine1 = existing human-readable Container label, such as C216
+objQr    = Container QR payload
+```
+
+The old Container-specific `objContainerLabel` object is a v3 template dependency and is not part of the accepted v4 generic template contract.
+
 Current Container quantity behavior remains two physical labels per selected Container unless separately changed and accepted.
+
+During the current polling transition, if both Display and Container requests are pending, v4 processes the selected Display workload first and leaves Container requests untouched for a later poll. This is a deterministic safety rule that avoids mixing 24 mm Display work with 36 mm Container work in one execution cycle.
 
 ## Display / Controller QR Rendering Contract
 
