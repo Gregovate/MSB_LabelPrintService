@@ -281,7 +281,6 @@ LABEL_FAMILIES = {
 # converted to use LABEL_FAMILIES directly.
 PRINTER_NAME = LABEL_FAMILIES["QR_36MM_HORIZONTAL"]["printer"]["queue_name"]
 
-DISPLAY_TEMPLATE = LABEL_FAMILIES["QR_36MM_HORIZONTAL"]["template_2_line"]
 CONTAINER_HORIZONTAL_TEMPLATE = LABEL_FAMILIES["QR_36MM_HORIZONTAL"]["template_1_line"]
 CONTAINER_VERTICAL_TEMPLATE = LABEL_FAMILIES["QR_36MM_VERTICAL"]["template_1_line"]
 
@@ -483,39 +482,55 @@ def decode_bpac_code(code: int) -> str:
     return BPAC_STATUS_CODES.get(code, f"Unknown code {code} (0x{code:08X})")
 
 
-def printer_preflight(template_path: Path) -> tuple[bool, str]:
+def printer_preflight(
+    template_path: Path,
+    printer_name: str,
+    required_objects: tuple[str, ...] = (),
+) -> tuple[bool, str]:
     """
-    Check whether the printer appears ready before creating a batch.
+    Validate the selected physical template and Windows printer before
+    any PostgreSQL execution-batch state is created.
 
-    Returns:
-      (True, "OK")
-      (False, "reason")
+    Brother SNMP status hardening and Retry/Cancel dialogs are added in
+    the next v4 preflight checkpoint; this function preserves the
+    existing b-PAC media check while making it family/template-specific.
     """
+    doc = None
+
     try:
-        #doc, _ = create_bpac_document_with_events()
+        if template_path is None:
+            return False, "No physical template is configured for this render mode"
+
+        if not template_path.exists():
+            return False, f"Template file does not exist: {template_path}"
+
         doc = create_bpac_document()
 
         opened = doc.Open(str(template_path))
         if not opened:
             return False, f"Could not open template: {template_path}"
 
-        set_printer_ok = doc.SetPrinter(PRINTER_NAME, True)
+        set_printer_ok = doc.SetPrinter(printer_name, True)
         if not set_printer_ok:
-            return False, f"Could not set printer '{PRINTER_NAME}'"
+            return False, f"Could not set printer '{printer_name}'"
 
-        # Template media from LBX
+        for object_name in required_objects:
+            if doc.GetObject(object_name) is None:
+                return False, (
+                    f"Template '{template_path.name}' is missing required "
+                    f"object '{object_name}'"
+                )
+
         try:
             template_media = doc.GetMediaName
         except Exception as exc:
             template_media = f"<error reading template media: {exc}>"
 
-        # Printer media from printer object
         try:
             printer_media = doc.Printer.GetMediaName
         except Exception as exc:
             return False, f"Printer GetMediaName failed: {exc}"
 
-        # Media ID / error path
         media_id = None
         media_id_error = None
         try:
@@ -523,33 +538,47 @@ def printer_preflight(template_path: Path) -> tuple[bool, str]:
         except Exception as exc:
             media_id_error = str(exc)
 
-        # Close doc as best we can
-        try:
-            _ = doc.Close()
-        except Exception:
-            pass
-
-        # Known failure cases
         if media_id in (101, 102, 50593795):
             return False, decode_bpac_code(media_id)
 
         if not printer_media or str(printer_media).strip() == "":
-            return False, "Printer not ready (no media, offline, or driver not responding)"
+            return False, (
+                "Printer not ready "
+                "(no media, offline, or driver not responding)"
+            )
 
-        # Optional media mismatch warning
-        # Do not hard-fail on mismatch yet unless you want to enforce it
-        if template_media and printer_media and str(template_media).strip() != str(printer_media).strip():
-            return False, f"Loaded media '{printer_media}' does not match template media '{template_media}'"
+        if (
+            template_media
+            and printer_media
+            and str(template_media).strip() != str(printer_media).strip()
+        ):
+            return False, (
+                f"Loaded media '{printer_media}' does not match "
+                f"template media '{template_media}'"
+            )
 
         if media_id_error:
-            # If GetMediaId threw something but media name exists, log it as warning-level text
-            return True, f"OK (GetMediaId warning: {media_id_error})"
+            return True, (
+                f"OK template={template_path.name} "
+                f"(GetMediaId warning: {media_id_error})"
+            )
 
-        return True, f"OK (template_media={template_media}, printer_media={printer_media})"
+        return True, (
+            f"OK template={template_path.name} "
+            f"template_media={template_media} printer_media={printer_media}"
+        )
 
     except Exception as exc:
         return False, f"Printer preflight exception: {exc}"
-    
+
+    finally:
+        if doc is not None:
+            try:
+                _ = doc.Close
+            except Exception:
+                pass
+
+
 # ============================================================
 # LOGGING HELPERS
 # ============================================================
@@ -577,8 +606,14 @@ def pending_display_count(conn) -> int:
 
 def pending_display_families(conn) -> list[dict[str, Any]]:
     """
-    Return the physical label families represented by pending Display
-    requests. One Display execution batch may contain only one family.
+    Return pending Display physical families and the one-line/two-line
+    render modes required by each family.
+
+    Accepted compatibility rule:
+      - <= 20 characters: one line
+      - > 20 with at least two hyphen-delimited leading segments:
+        split after the second segment
+      - > 20 without that structure: remain one line
     """
     return query_rows(
         conn,
@@ -586,7 +621,15 @@ def pending_display_families(conn) -> list[dict[str, Any]]:
         SELECT
             d.label_template_id,
             lt.label_template_code,
-            COUNT(*)::integer AS pending_count
+            COUNT(*)::integer AS pending_count,
+            COUNT(*) FILTER (
+                WHERE LENGTH(d.display_name) <= 20
+                   OR d.display_name !~ '^[^-]+-[^-]+-'
+            )::integer AS one_line_count,
+            COUNT(*) FILTER (
+                WHERE LENGTH(d.display_name) > 20
+                  AND d.display_name ~ '^[^-]+-[^-]+-'
+            )::integer AS two_line_count
         FROM ref.display d
         JOIN ref.label_template lt
           ON lt.label_template_id = d.label_template_id
@@ -1050,50 +1093,102 @@ def wait_for_spooler_job_to_clear(
 # DISPLAY PRINTING
 # ============================================================
 
-def print_display_batch(rows: list[dict[str, Any]], batch_log_path: Path) -> None:
-    """
-    Print display labels through b-PAC and verify job completion using
-    the Windows print queue.
-    """
+
+def get_display_batch_family_code(conn, display_batch_id: int) -> str:
+    family_code = query_value(
+        conn,
+        """
+        SELECT lt.label_template_code
+        FROM ops.display_label_batch b
+        JOIN ref.label_template lt
+          ON lt.label_template_id = b.label_template_id
+        WHERE b.display_label_batch_id = %(batch_id)s;
+        """,
+        {"batch_id": display_batch_id},
+    )
+
+    if not family_code:
+        raise RuntimeError(
+            f"Display batch {display_batch_id} has no resolvable label family."
+        )
+
+    return str(family_code)
+
+
+def print_display_rows_with_template(
+    rows: list[dict[str, Any]],
+    family: dict[str, Any],
+    template_path: Path,
+    batch_log_path: Path,
+    variant: str,
+) -> None:
     if not rows:
-        write_batch_log(batch_log_path, "No display rows to print.")
         return
 
-    baseline_jobs = get_print_jobs(PRINTER_NAME)
-    baseline_job_ids = {int(job.get("JobId")) for job in baseline_jobs}
+    printer_name = family["printer"]["queue_name"]
+
+    baseline_jobs = get_print_jobs(printer_name)
+    baseline_job_ids = {
+        int(job.get("JobId"))
+        for job in baseline_jobs
+    }
+
     write_batch_log(
         batch_log_path,
-        f"Baseline queue before display print: {summarize_print_jobs(baseline_jobs)}",
+        f"Baseline queue before {variant} Display print: "
+        f"{summarize_print_jobs(baseline_jobs)}",
     )
 
     doc = create_bpac_document()
 
-    write_batch_log(batch_log_path, f"Opening display template: {DISPLAY_TEMPLATE}")
-    opened = doc.Open(str(DISPLAY_TEMPLATE))
-    write_batch_log(batch_log_path, f"Template opened: {opened}")
-    if not opened:
-        raise RuntimeError("b-PAC could not open the display template.")
+    write_batch_log(
+        batch_log_path,
+        f"Opening Display template family={family['code']} "
+        f"variant={variant}: {template_path}",
+    )
 
-    set_printer_ok = doc.SetPrinter(PRINTER_NAME, True)
-    write_batch_log(batch_log_path, f"SetPrinter('{PRINTER_NAME}') = {set_printer_ok}")
+    opened = doc.Open(str(template_path))
+    write_batch_log(batch_log_path, f"Template opened: {opened}")
+
+    if not opened:
+        raise RuntimeError(
+            f"b-PAC could not open Display template: {template_path}"
+        )
+
+    set_printer_ok = doc.SetPrinter(printer_name, True)
+    write_batch_log(
+        batch_log_path,
+        f"SetPrinter('{printer_name}') = {set_printer_ok}",
+    )
+
     if not set_printer_ok:
-        raise RuntimeError("b-PAC could not set the display printer.")
+        raise RuntimeError(
+            f"b-PAC could not set Display printer '{printer_name}'."
+        )
 
     log_media_status(doc, batch_log_path)
 
     obj_line1 = get_required_object(doc, DISPLAY_OBJ_LINE1)
     obj_qr = get_required_object(doc, DISPLAY_OBJ_QR)
-    obj_line2 = get_optional_object(doc, DISPLAY_OBJ_LINE2)
+
+    obj_line2 = None
+    if variant == "TWO_LINE":
+        obj_line2 = get_required_object(doc, DISPLAY_OBJ_LINE2)
 
     write_batch_log(
         batch_log_path,
-        f"Resolved display objects: line1={DISPLAY_OBJ_LINE1}, "
-        f"line2={DISPLAY_OBJ_LINE2 if obj_line2 is not None else 'MISSING'}, "
+        f"Resolved Display objects family={family['code']} "
+        f"variant={variant}: "
+        f"line1={DISPLAY_OBJ_LINE1}, "
+        f"line2={DISPLAY_OBJ_LINE2 if obj_line2 is not None else 'NOT USED'}, "
         f"qr={DISPLAY_OBJ_QR}",
     )
 
     doc.StartPrint("", PRINT_FLAGS)
-    write_batch_log(batch_log_path, f"StartPrint called with flags={hex(PRINT_FLAGS)}")
+    write_batch_log(
+        batch_log_path,
+        f"StartPrint called with flags={hex(PRINT_FLAGS)}",
+    )
 
     for idx, row in enumerate(rows, start=1):
         obj_line1.Text = row.get("line1", "") or ""
@@ -1103,26 +1198,107 @@ def print_display_batch(rows: list[dict[str, Any]], batch_log_path: Path) -> Non
             obj_line2.Text = row.get("line2", "") or ""
 
         result = doc.PrintOut(1, 0)
+
         write_batch_log(
             batch_log_path,
-            f"Queued display label {idx}/{len(rows)} "
+            f"Queued Display label {idx}/{len(rows)} "
+            f"family={family['code']} variant={variant} "
             f"display_id={row.get('display_id')} result={result} "
             f"line1={row.get('line1')} line2={row.get('line2')}",
         )
 
         if not result:
             raise RuntimeError(
-                f"Display PrintOut failed on row {idx} display_id={row.get('display_id')}"
+                f"Display PrintOut failed on row {idx} "
+                f"display_id={row.get('display_id')}"
             )
 
     finish_bpac_document(doc, batch_log_path)
 
     wait_for_spooler_job_to_clear(
-        printer_name=PRINTER_NAME,
+        printer_name=printer_name,
         known_job_ids=baseline_job_ids,
-        expected_document=DISPLAY_TEMPLATE.stem,
+        expected_document=template_path.stem,
         batch_log_path=batch_log_path,
     )
+
+
+def print_display_batch(
+    rows: list[dict[str, Any]],
+    batch_log_path: Path,
+    family_code: str,
+) -> None:
+    """
+    Route one homogeneous Display family to its physical one-line and
+    two-line LBX templates.
+    """
+    if not rows:
+        write_batch_log(batch_log_path, "No Display rows to print.")
+        return
+
+    family = LABEL_FAMILIES.get(family_code)
+    if family is None:
+        raise RuntimeError(
+            f"No LabelPrintService runtime mapping exists for "
+            f"Display family '{family_code}'."
+        )
+
+    if family_code not in (
+        "QR_36MM_HORIZONTAL",
+        "QR_24MM_HORIZONTAL",
+    ):
+        raise RuntimeError(
+            f"Label family '{family_code}' is not an accepted "
+            f"Display identity-label family."
+        )
+
+    one_line_rows = [
+        row for row in rows
+        if not (row.get("line2") or "").strip()
+    ]
+
+    two_line_rows = [
+        row for row in rows
+        if (row.get("line2") or "").strip()
+    ]
+
+    write_batch_log(
+        batch_log_path,
+        f"Display render plan family={family_code}: "
+        f"one_line={len(one_line_rows)} "
+        f"two_line={len(two_line_rows)}",
+    )
+
+    if one_line_rows:
+        template = family["template_1_line"]
+        if template is None:
+            raise RuntimeError(
+                f"Family '{family_code}' has no one-line template."
+            )
+
+        print_display_rows_with_template(
+            rows=one_line_rows,
+            family=family,
+            template_path=template,
+            batch_log_path=batch_log_path,
+            variant="ONE_LINE",
+        )
+
+    if two_line_rows:
+        template = family["template_2_line"]
+        if template is None:
+            raise RuntimeError(
+                f"Family '{family_code}' has no two-line template."
+            )
+
+        print_display_rows_with_template(
+            rows=two_line_rows,
+            family=family,
+            template_path=template,
+            batch_log_path=batch_log_path,
+            variant="TWO_LINE",
+        )
+
 
 # ============================================================
 # CONTAINER PRINTING
@@ -1301,19 +1477,55 @@ def get_failed_container_batch_id(conn):
 # ============================================================
 
 def process_display(conn, display_batch_id: int) -> None:
-    rows = query_rows(conn, load_sql("display_export.sql"), {"batch_id": display_batch_id})
+    rows = query_rows(
+        conn,
+        load_sql("display_export.sql"),
+        {"batch_id": display_batch_id},
+    )
     write_csv(DISPLAY_CSV, rows)
 
+    family_code = get_display_batch_family_code(
+        conn,
+        display_batch_id,
+    )
+
     batch_log_path = new_batch_log_path("display", display_batch_id)
-    write_batch_log(batch_log_path, f"Display batch {display_batch_id} created.")
-    write_batch_log(batch_log_path, f"Display CSV written: {DISPLAY_CSV}")
-    write_batch_log(batch_log_path, f"Display row count: {len(rows)}")
+    write_batch_log(
+        batch_log_path,
+        f"Display batch {display_batch_id} created.",
+    )
+    write_batch_log(
+        batch_log_path,
+        f"Display family: {family_code}",
+    )
+    write_batch_log(
+        batch_log_path,
+        f"Display CSV written: {DISPLAY_CSV}",
+    )
+    write_batch_log(
+        batch_log_path,
+        f"Display row count: {len(rows)}",
+    )
 
-    print_display_batch(rows, batch_log_path)
+    print_display_batch(
+        rows,
+        batch_log_path,
+        family_code,
+    )
 
-    exec_sql(conn, load_sql("display_finalized.sql"), {"batch_id": display_batch_id})
-    write_batch_log(batch_log_path, "Display batch finalized successfully.")
-    logging.info("Display batch %s completed successfully.", display_batch_id)
+    exec_sql(
+        conn,
+        load_sql("display_finalized.sql"),
+        {"batch_id": display_batch_id},
+    )
+    write_batch_log(
+        batch_log_path,
+        "Display batch finalized successfully.",
+    )
+    logging.info(
+        "Display batch %s completed successfully.",
+        display_batch_id,
+    )
 
 
 def process_container(conn, container_batch_id: int) -> None:
@@ -1419,28 +1631,6 @@ def main() -> None:
                     else None
                 )
 
-                # Temporary safety gate for this checkpoint.
-                # Family-specific physical printer/template routing is the
-                # next v4 change. Never allow a 24 mm request to fall through
-                # the inherited fixed 36 mm print path.
-                if (
-                    selected_display_family is not None
-                    and selected_display_family["label_template_code"]
-                    != "QR_36MM_HORIZONTAL"
-                ):
-                    family_msg = (
-                        "Pending Display family "
-                        f'{selected_display_family["label_template_code"]} '
-                        "is not yet enabled for physical printing in this "
-                        "v4 checkpoint. Request remains pending."
-                    )
-                    logging.warning(family_msg)
-                    print(family_msg)
-                    conn.rollback()
-                    clear_lock()
-                    time.sleep(POLL_SECONDS)
-                    continue
-
                 if display_pending == 0 and container_pending == 0:
                     logging.info("No pending labels. Service idle.")
                     conn.rollback()
@@ -1488,41 +1678,171 @@ def main() -> None:
                     continue
 
                 # --------------------------------------------------
-                # Step 2: Preflight printer BEFORE creating any batch
-                # This prevents endless batch creation when printer is
-                # empty, offline, paused, or otherwise not ready.
+                # Step 2: Resolve exact physical workload BEFORE batch creation
                 # --------------------------------------------------
-                preflight_template = (
-                    DISPLAY_TEMPLATE
-                    if display_pending > 0
-                    else CONTAINER_VERTICAL_TEMPLATE
-                )
-
-                preflight_ok, preflight_msg = printer_preflight(preflight_template)
-
-                if not preflight_ok:
-                    logging.error("Printer preflight failed: %s", preflight_msg)
-                    print(f"Printer preflight failed: {preflight_msg}")
+                if container_pending > 0 and display_pending == 0:
+                    container_msg = (
+                        "Container labels are pending, but Container rendering "
+                        "is not yet enabled in this v4 checkpoint. "
+                        "No batch was created and requests remain pending."
+                    )
+                    logging.warning(container_msg)
+                    print(container_msg)
                     conn.rollback()
                     clear_lock()
                     time.sleep(POLL_SECONDS)
                     continue
 
-                logging.info("Printer preflight passed: %s", preflight_msg)
-                print(f"Printer preflight passed: {preflight_msg}")
+                selected_family_config = None
+                selected_printer_name = None
+                required_display_templates: list[
+                    tuple[Path, tuple[str, ...]]
+                ] = []
 
-                # --------------------------------------------------
-                # Step 2a: queue-empty guard
-                # --------------------------------------------------
-                queue_jobs = get_print_jobs(PRINTER_NAME)
-                if queue_jobs:
-                    queue_msg = f"Printer queue is not empty: {summarize_print_jobs(queue_jobs)}"
-                    logging.error(queue_msg)
-                    print(queue_msg)
-                    conn.rollback()
-                    clear_lock()
-                    time.sleep(POLL_SECONDS)
-                    continue
+                if display_pending > 0:
+                    family_code = str(
+                        selected_display_family["label_template_code"]
+                    )
+
+                    if family_code not in (
+                        "QR_36MM_HORIZONTAL",
+                        "QR_24MM_HORIZONTAL",
+                    ):
+                        family_msg = (
+                            f"Pending Display family '{family_code}' is not "
+                            "an accepted Display identity-label family."
+                        )
+                        logging.error(family_msg)
+                        print(family_msg)
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    selected_family_config = LABEL_FAMILIES.get(
+                        family_code
+                    )
+
+                    if selected_family_config is None:
+                        family_msg = (
+                            f"No LabelPrintService runtime mapping exists "
+                            f"for Display family '{family_code}'."
+                        )
+                        logging.error(family_msg)
+                        print(family_msg)
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    selected_printer_name = (
+                        selected_family_config["printer"]["queue_name"]
+                    )
+
+                    if int(
+                        selected_display_family["one_line_count"]
+                    ) > 0:
+                        template = selected_family_config[
+                            "template_1_line"
+                        ]
+                        if template is None:
+                            raise RuntimeError(
+                                f"Family '{family_code}' has pending "
+                                "one-line Displays but no one-line template."
+                            )
+
+                        required_display_templates.append(
+                            (
+                                template,
+                                (
+                                    DISPLAY_OBJ_LINE1,
+                                    DISPLAY_OBJ_QR,
+                                ),
+                            )
+                        )
+
+                    if int(
+                        selected_display_family["two_line_count"]
+                    ) > 0:
+                        template = selected_family_config[
+                            "template_2_line"
+                        ]
+                        if template is None:
+                            raise RuntimeError(
+                                f"Family '{family_code}' has pending "
+                                "two-line Displays but no two-line template."
+                            )
+
+                        required_display_templates.append(
+                            (
+                                template,
+                                (
+                                    DISPLAY_OBJ_LINE1,
+                                    DISPLAY_OBJ_LINE2,
+                                    DISPLAY_OBJ_QR,
+                                ),
+                            )
+                        )
+
+                    display_preflight_failed = False
+                    for template_path, required_objects in (
+                        required_display_templates
+                    ):
+                        preflight_ok, preflight_msg = printer_preflight(
+                            template_path=template_path,
+                            printer_name=selected_printer_name,
+                            required_objects=required_objects,
+                        )
+
+                        if not preflight_ok:
+                            logging.error(
+                                "Display preflight failed: %s",
+                                preflight_msg,
+                            )
+                            print(
+                                f"Display preflight failed: "
+                                f"{preflight_msg}"
+                            )
+                            display_preflight_failed = True
+                            break
+
+                        logging.info(
+                            "Display preflight passed: %s",
+                            preflight_msg,
+                        )
+                        print(
+                            f"Display preflight passed: "
+                            f"{preflight_msg}"
+                        )
+
+                    if display_preflight_failed:
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    queue_jobs = get_print_jobs(
+                        selected_printer_name
+                    )
+
+                    if queue_jobs:
+                        queue_msg = (
+                            f"Printer queue is not empty: "
+                            f"{summarize_print_jobs(queue_jobs)}"
+                        )
+                        logging.error(queue_msg)
+                        print(queue_msg)
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    if container_pending > 0:
+                        logging.warning(
+                            "Container labels are also pending. This checkpoint "
+                            "will process the Display batch only and leave "
+                            "Container requests untouched."
+                        )
 
                 # --------------------------------------------------
                 # Step 3: Only create batches AFTER printer passes Updated 04/16/26 for warning and loop
@@ -1537,7 +1857,10 @@ def main() -> None:
                     )
 
                 if container_pending > 0:
-                    container_batch_id = create_container_batch(conn)
+                    logging.info(
+                        "Container batch creation deferred in this v4 checkpoint; "
+                        "pending Container requests remain untouched."
+                    )
 
                 logging.info(
                     "Batch creation results - display_batch_id=%s container_batch_id=%s",

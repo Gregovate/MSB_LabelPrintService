@@ -170,12 +170,39 @@ assigned QR_36MM_HORIZONTAL
 
 The same applies to the 24 mm horizontal family.
 
-The exact one-line thresholds are to be established by physical template testing. Do not freeze arbitrary thresholds merely to finish code.
+For the current Display label population, the accepted v4 compatibility rule preserves the established production split behavior:
+
+```text
+display_name length <= 20
+    -> one-line template
+
+display_name length > 20
+AND the name contains at least two leading hyphen-delimited segments
+    -> split after the second segment
+    -> two-line template
+
+display_name length > 20
+AND that two-hyphen structure is absent
+    -> keep the complete name on the one-line template
+```
+
+The 2026-08-31 profile found 107 Display names over 20 characters. 103 follow the established two-hyphen split structure. Three confirmed valid long names intentionally remain one-line:
+
+```text
+CL-LollipopTrailerNetLights
+MI-ProgramTrailerPallets
+PB-SlidingPenguinsString
+```
+
+`display_id 650` (`SecurityLight-FoodTruck`) was identified during this review as incorrect upstream/master data that does not follow the naming standard and does not represent a real Food Truck Display. It must be corrected upstream and re-parsed; v4 must not add a renderer special case for that bad row.
+
+The purpose of the one-line/two-line selection is to avoid printing hundreds of otherwise compact labels as wasteful single-line tape while preserving exact Display identity text.
 
 ### Safe split behavior
 
-- prefer a meaningful safe break, especially existing hyphen-delimited segments;
-- do not silently rewrite the identity text to make it fit;
+- preserve the exact Display name content;
+- use the established second-hyphen split where the naming structure supports it;
+- allow the confirmed valid long exceptions above to remain one-line;
 - snapshot the final `line1`/`line2` values used for the batch;
 - once the batch is created, the frozen render intent must not be silently recomputed from later source edits.
 
@@ -215,7 +242,7 @@ objLine2
 
 For Wiring, `objChannel` is the physical controller output/channel number and is the visually dominant field. It is normally a large integer from `1` through `16`.
 
-`objLine1` / `objLine2` are the installer-facing descriptive wiring text. They should contain the field plug identifier and useful connection metadata supplied by the structured FieldWiring system.
+`objLine1` / `objLine2` are the installer-facing descriptive wiring text. They contain only the useful descriptive connection metadata supplied by the structured FieldWiring system. Field plug identifiers such as `P1` are not printed.
 
 The raw LOR Channel Name is source evidence, not automatically print-ready text. It may contain Stage short codes and controller UID/address scaffolding used only to keep the preview organized. LabelPrintService must not print those authoring prefixes merely because they exist in the raw Channel Name, and it must not implement a fragile parser that guesses which prefixes to strip.
 
@@ -229,22 +256,22 @@ may resolve semantically to:
 
 ```text
 objChannel = 9
-objLine1/objLine2 = field plug P1 + useful Caroler/Mouth Open 2 metadata
+objLine1/objLine2 = Caroler / Mouth Open 2
 ```
 
 The exact ordering and one-line/two-line split of the supplied descriptive metadata remains a rendering/test decision. The Stage code `TC` and controller UID `7B` are not required physical-label text.
 
-The service must never split or rewrite `objChannel`. Only the supplied plug/metadata text is eligible for safe splitting between `objLine1` and `objLine2`.
+The service must never split or rewrite `objChannel`. Only the supplied descriptive metadata is eligible for safe splitting between `objLine1` and `objLine2`.
 
 ## Wiring Label Purpose
 
 The 12 mm Wiring label is intentionally smaller than the permanent identity labels. The smaller label is a field hookup/configuration label, not a permanent asset identity label.
 
-The visual goal is to improve field readability beyond handheld-printer labels by showing the physical controller output/channel number prominently while retaining the field plug and useful connection metadata for confirmation.
+The visual goal is to improve field readability beyond handheld-printer labels by showing the physical controller output/channel number prominently while retaining only useful descriptive connection metadata for confirmation.
 
 The channel number alone does not identify a particular controller. Specific controller identity, Stage, network, UID/address, universe, and other context remain available through the wiring system rather than being permanently encoded into every descriptive wiring line.
 
-Wiring request/snapshot implementation remains gated until FieldWiring exposes the structured channel/output, plug, and printable metadata fields unambiguously. v4 must not block Setup-critical Display/Container work on that future mapping.
+Wiring request/snapshot implementation remains gated until FieldWiring exposes the structured channel/output and printable metadata fields unambiguously. v4 must not block Setup-critical Display/Container work on that future mapping.
 
 ## QR Payload Compatibility
 
@@ -586,7 +613,7 @@ Not required to complete the immediate Setup-critical v4 repair unless acceptanc
 - production Location printing on QL-820NWB;
 - final QL media identity/end-of-roll decoding;
 - future Label Printing application;
-- full FieldWiring print-request UI and structured channel/plug/metadata source mapping;
+- full FieldWiring print-request UI and structured channel/printable-metadata source mapping;
 - Controller printing until Controller assignment/family workflow is ready;
 - application-level automatic tape-out boundary-label replay;
 - unrelated cleanup of duplicate historical DB constraints.
