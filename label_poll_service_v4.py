@@ -575,6 +575,30 @@ def pending_display_count(conn) -> int:
     ) or 0)
 
 
+def pending_display_families(conn) -> list[dict[str, Any]]:
+    """
+    Return the physical label families represented by pending Display
+    requests. One Display execution batch may contain only one family.
+    """
+    return query_rows(
+        conn,
+        """
+        SELECT
+            d.label_template_id,
+            lt.label_template_code,
+            COUNT(*)::integer AS pending_count
+        FROM ref.display d
+        JOIN ref.label_template lt
+          ON lt.label_template_id = d.label_template_id
+        WHERE d.print_label = true
+        GROUP BY
+            d.label_template_id,
+            lt.label_template_code
+        ORDER BY d.label_template_id;
+        """,
+    )
+
+
 def pending_container_count(conn) -> int:
     return int(query_value(
         conn,
@@ -640,7 +664,10 @@ def active_container_batch_id(conn) -> int | None:
     return int(batch_id) if batch_id is not None else None
 
 #03/30/26 DISPLAY LABELS
-def get_display_batch_actor(conn) -> tuple[int | None, str | None]:
+def get_display_batch_actor(
+    conn,
+    label_template_id: int,
+) -> tuple[int | None, str | None]:
     row = query_rows(
         conn,
         """
@@ -649,14 +676,21 @@ def get_display_batch_actor(conn) -> tuple[int | None, str | None]:
             updated_by
         FROM ref.display
         WHERE print_label = true
-        """
+          AND label_template_id = %(label_template_id)s
+        ORDER BY updated_by_person_id NULLS LAST, updated_by
+        """,
+        {"label_template_id": label_template_id},
     )
 
     if not row:
         return None, None
 
     if len(row) > 1:
-        logging.warning("Multiple actors detected for display batch. Using first row.")
+        logging.warning(
+            "Multiple actors detected for display family label_template_id=%s. "
+            "Using first row.",
+            label_template_id,
+        )
 
     return row[0]["updated_by_person_id"], row[0]["updated_by"]
 
@@ -710,8 +744,14 @@ def clear_lock() -> None:
 # BATCH CREATION
 # ============================================================
 
-def create_display_batch(conn) -> int | None:
-    person_id, person_text = get_display_batch_actor(conn)
+def create_display_batch(
+    conn,
+    label_template_id: int,
+) -> int | None:
+    person_id, person_text = get_display_batch_actor(
+        conn,
+        label_template_id,
+    )
 
     if person_id is None:
         logging.warning(
@@ -725,10 +765,17 @@ def create_display_batch(conn) -> int | None:
         INSERT INTO ops.display_label_batch (
             started_by_person_id,
             started_by_text,
+            label_template_id,
             status,
             notes
         )
-        VALUES (%(person_id)s, %(person_text)s, 'PRINTING', 'Polling service snapshot')
+        VALUES (
+            %(person_id)s,
+            %(person_text)s,
+            %(label_template_id)s,
+            'PRINTING',
+            'Polling service snapshot'
+        )
         RETURNING display_label_batch_id;
     """
     batch_id = query_value(
@@ -737,10 +784,18 @@ def create_display_batch(conn) -> int | None:
         {
             "person_id": person_id,
             "person_text": person_text,
+            "label_template_id": label_template_id,
         },
     )
 
-    exec_sql(conn, load_sql("display_snapshot.sql"), {"batch_id": batch_id})
+    exec_sql(
+        conn,
+        load_sql("display_snapshot.sql"),
+        {
+            "batch_id": batch_id,
+            "label_template_id": label_template_id,
+        },
+    )
 
     row_count = query_value(
         conn,
@@ -757,8 +812,10 @@ def create_display_batch(conn) -> int | None:
         return None
 
     logging.info(
-        "Created display batch %s started_by_person_id=%s started_by_text=%s",
+        "Created display batch %s label_template_id=%s "
+        "started_by_person_id=%s started_by_text=%s",
         batch_id,
+        label_template_id,
         person_id,
         person_text,
     )
@@ -1318,13 +1375,71 @@ def main() -> None:
                 # --------------------------------------------------
                 # Step 1: Check whether there is any work pending
                 # --------------------------------------------------
-                display_pending = pending_display_count(conn)
+                display_families = pending_display_families(conn)
+                display_pending = sum(
+                    int(row["pending_count"])
+                    for row in display_families
+                )
                 container_pending = pending_container_count(conn)
+
                 logging.info(
-                    "Pending labels - displays=%s containers=%s",
+                    "Pending labels - displays=%s containers=%s display_families=%s",
                     display_pending,
                     container_pending,
+                    [
+                        (
+                            row["label_template_id"],
+                            row["label_template_code"],
+                            row["pending_count"],
+                        )
+                        for row in display_families
+                    ],
                 )
+
+                if len(display_families) > 1:
+                    family_msg = (
+                        "Multiple pending Display label families detected. "
+                        "No Display batch will be created until v4 family routing "
+                        "selects one compatible workload: "
+                        + ", ".join(
+                            f'{row["label_template_code"]}={row["pending_count"]}'
+                            for row in display_families
+                        )
+                    )
+                    logging.error(family_msg)
+                    print(family_msg)
+                    conn.rollback()
+                    clear_lock()
+                    time.sleep(POLL_SECONDS)
+                    continue
+
+                selected_display_family = (
+                    display_families[0]
+                    if display_families
+                    else None
+                )
+
+                # Temporary safety gate for this checkpoint.
+                # Family-specific physical printer/template routing is the
+                # next v4 change. Never allow a 24 mm request to fall through
+                # the inherited fixed 36 mm print path.
+                if (
+                    selected_display_family is not None
+                    and selected_display_family["label_template_code"]
+                    != "QR_36MM_HORIZONTAL"
+                ):
+                    family_msg = (
+                        "Pending Display family "
+                        f'{selected_display_family["label_template_code"]} '
+                        "is not yet enabled for physical printing in this "
+                        "v4 checkpoint. Request remains pending."
+                    )
+                    logging.warning(family_msg)
+                    print(family_msg)
+                    conn.rollback()
+                    clear_lock()
+                    time.sleep(POLL_SECONDS)
+                    continue
 
                 if display_pending == 0 and container_pending == 0:
                     logging.info("No pending labels. Service idle.")
@@ -1416,7 +1531,10 @@ def main() -> None:
                 container_batch_id = None
 
                 if display_pending > 0:
-                    display_batch_id = create_display_batch(conn)
+                    display_batch_id = create_display_batch(
+                        conn,
+                        int(selected_display_family["label_template_id"]),
+                    )
 
                 if container_pending > 0:
                     container_batch_id = create_container_batch(conn)

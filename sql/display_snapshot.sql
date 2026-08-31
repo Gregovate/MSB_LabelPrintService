@@ -3,6 +3,7 @@
     display_snapshot.sql
    Parameters:
      %(batch_id)s
+     %(label_template_id)s
    ====================================================================== */
 
 INSERT INTO ops.display_label_batch_item (
@@ -40,4 +41,5 @@ SELECT
 
 FROM ref.display d
 WHERE d.print_label = true
+  AND d.label_template_id = %(label_template_id)s
 ON CONFLICT (display_label_batch_id, display_id) DO NOTHING;
