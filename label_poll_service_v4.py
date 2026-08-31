@@ -913,7 +913,7 @@ def create_container_batch(conn) -> int | None:
         },
     )
 
-    exec_sql(conn, load_sql("container_snapshot.sql"), {"batch_id": batch_id})
+    exec_sql(conn, load_sql("container_snapshot_v4.sql"), {"batch_id": batch_id})
 
     row_count = query_value(
         conn,

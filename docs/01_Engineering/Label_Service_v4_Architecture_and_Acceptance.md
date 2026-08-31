@@ -160,6 +160,8 @@ The old Container-specific `objContainerLabel` object is a v3 template dependenc
 
 Current Container quantity behavior remains two physical labels per selected Container unless separately changed and accepted.
 
+For v4, newly printed/replacement Container labels use the compact canonical machine payload `CONT:<container_id>`. This is intentionally isolated in `sql/container_snapshot_v4.sql`; the shared v3 `sql/container_snapshot.sql` remains full-URL for rollback compatibility.
+
 During the current polling transition, if both Display and Container requests are pending, v4 processes the selected Display workload first and leaves Container requests untouched for a later poll. This is a deterministic safety rule that avoids mixing 24 mm Display work with 36 mm Container work in one execution cycle.
 
 ## Display / Controller QR Rendering Contract
@@ -284,11 +286,11 @@ The channel number alone does not identify a particular controller. Specific con
 
 Wiring request/snapshot implementation remains gated until FieldWiring exposes the structured channel/output and printable metadata fields unambiguously. v4 must not block Setup-critical Display/Container work on that future mapping.
 
-## QR Payload Compatibility
+## QR Payload Compatibility and Container-First Migration
 
-Existing deployed Display and Container labels contain full scan URLs and remain supported. There is no mass relabel requirement solely to change payload format.
+Existing deployed Display and Container labels contain full scan URLs and remain supported indefinitely. There is no mass relabel requirement solely to change payload format.
 
-The scan platform also accepts compact canonical payloads such as:
+The scan platform accepts both full URLs and compact canonical payloads such as:
 
 ```text
 DISP:323
@@ -296,7 +298,41 @@ CONT:216
 LOC:<location_code>
 ```
 
-Compact payloads are preferred candidates for newly printed/replacement labels because Bluetooth HID entry of full URLs is slow. Final acceptance of compact payload printing must preserve backward compatibility with already-deployed full-URL labels.
+The operational tradeoff is different by scanning device:
+
+```text
+phone camera
+    full https://db.sheboyganlights.org/... QR
+    -> convenient direct browser opening
+
+Zebra Bluetooth HID scanner
+    full URL
+    -> slow because the scanner types every URL character
+
+Zebra Bluetooth HID scanner
+    CONT:216
+    -> much shorter/faster keyboard input
+```
+
+### Accepted migration order
+
+Containers migrate first because Container labels are expected to be the highest-volume Setup scanning workflow.
+
+For LabelPrintService v4:
+
+```text
+new/replacement Container QR payload
+    -> CONT:<container_id>
+
+new/replacement Display QR payload
+    -> keep full https://db.sheboyganlights.org/scan/DISP/<id> URL for now
+```
+
+Existing deployed Container full-URL labels continue to resolve normally. v3.4 rollback also retains its original full-URL Container snapshot behavior. Only the v4 Container snapshot path uses the compact payload.
+
+The database column/batch field remains named `qr_url` for backward-compatible schema reasons during this Setup-critical migration, but for v4 Container rows its value is the actual machine-readable payload and therefore may be `CONT:<id>` rather than a literal URL. Do not add a second schema merely to rename this field during the Setup-critical v4 work.
+
+Display compact-payload migration remains a separate later decision because full URLs are convenient when a phone camera is used directly.
 
 ## Printer Runtime Mapping
 
@@ -615,7 +651,13 @@ Application-level boundary-label reprint remains unapproved until real evidence 
 
 ### Compact QR payload
 
-If compact `DISP:` / `CONT:` payload printing is enabled in v4, prove scan compatibility while retaining support for existing full-URL physical labels.
+Container compact payload printing is enabled first in v4. Acceptance must prove at minimum:
+
+- a newly printed/replacement Container QR encodes exactly `CONT:<container_id>`;
+- Zebra HID scanning reaches the same Container scan workflow as the existing full URL;
+- already-deployed full-URL Container labels continue to resolve;
+- v3.4 rollback still snapshots/prints the original full Container URL;
+- Display v4 QR payload remains the full URL until a separate Display migration is accepted.
 
 ## Deferred / Future Work
 
