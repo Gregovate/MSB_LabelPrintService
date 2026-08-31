@@ -24,3 +24,4 @@ venv/
 # OS junk
 Thumbs.db
 .DS_Store
+config.v4.local.ini
