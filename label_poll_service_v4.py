@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import configparser
 import csv
@@ -65,97 +65,97 @@ import os
 # ============================================================
 # CHANGE LOG
 # ============================================================
-## 2026-04-16 — v3.4
-#   • IMPROVEMENT: Added rotating main service log
+## 2026-04-16 â€” v3.4
+#   â€¢ IMPROVEMENT: Added rotating main service log
 #       - Replaced basicConfig-only file logging with RotatingFileHandler
 #       - Preserves console output while preventing unlimited growth of label_service.log
 #       - Keeps rolling log history for troubleshooting
 #
-#   • IMPROVEMENT: Added explicit pre-print batch commit logging
+#   â€¢ IMPROVEMENT: Added explicit pre-print batch commit logging
 #       - Logs when batch rows are committed before print execution
 #       - Improves traceability of batch lifecycle during troubleshooting
 #
-## 2026-04-16 — v3.3
-#   • FIX: Prevent repeated batch requeue after print failure
+## 2026-04-16 â€” v3.3
+#   â€¢ FIX: Prevent repeated batch requeue after print failure
 #       - Added commit of batch header + batch items BEFORE physical printing
 #       - Ensures failed batches persist in database instead of being rolled back
 #       - Allows FAILED status to be written reliably
 #       - Enables failed-batch guard logic to function correctly
 #
-#   • FIX: Conditional batch creation to eliminate false warnings
+#   â€¢ FIX: Conditional batch creation to eliminate false warnings
 #       - Display batch is only created when display_pending > 0
 #       - Container batch is only created when container_pending > 0
 #       - Prevents misleading "Display batch actor not found" warnings during container-only runs
 #
-#   • IMPROVEMENT: Logging clarity during batch lifecycle
+#   â€¢ IMPROVEMENT: Logging clarity during batch lifecycle
 #       - Added explicit log entry when batch rows are committed prior to printing
 #       - Improves traceability of batch state transitions during debugging
 #
-#   • OPERATIONAL FIX: Resolved repeat print storm condition
+#   â€¢ OPERATIONAL FIX: Resolved repeat print storm condition
 #       - Root cause: failed batches rolled back before status update, leaving print_label flags active
 #       - Result: same labels requeued and printed multiple times
 #       - v3.3 ensures failed batches remain visible and block retries until resolved
 #
-## 2026-03-30 — v3.2
-#   • FEATURE: Capture true user actor for label batch creation
+## 2026-03-30 â€” v3.2
+#   â€¢ FEATURE: Capture true user actor for label batch creation
 #       - Batch started_by_person_id / started_by_text now sourced from
 #         ref.display / ref.container audit fields (updated_by*)
 #       - Replaces previous static service account assignment
 #
-#   • IMPROVEMENT: Batch audit accuracy
+#   â€¢ IMPROVEMENT: Batch audit accuracy
 #       - Batch now reflects the actual user who requested printing
 #       - Print history continues to reflect service execution identity
 #
-#   • SAFETY: Added fallback to service identity
+#   â€¢ SAFETY: Added fallback to service identity
 #       - If audit fields are missing or NULL, system falls back to
 #         configured service account to prevent batch failure
 #
-#   • DIAGNOSTICS: Added logging for batch actor selection
+#   â€¢ DIAGNOSTICS: Added logging for batch actor selection
 #       - Logs include started_by_person_id and started_by_text
 #       - Warns when multiple actors detected in a single batch
 #       - Aligns batch actor tracking with ops audit model used throughout system
 
-## 2026-03-26 — v3.1
-#   • FIX: Prevent endless batch retry loop after failure
+## 2026-03-26 â€” v3.1
+#   â€¢ FIX: Prevent endless batch retry loop after failure
 #       - Added failed-batch guard logic in main polling loop
 #       - Prevents repeated batch creation when printer fails mid-run
 #
-#   • FIX: Resolved function/variable shadowing bug
+#   â€¢ FIX: Resolved function/variable shadowing bug
 #       - Renamed failed batch helper functions to avoid UnboundLocalError
 #
-#   • IMPROVEMENT: Added spooler status decoding in logs
+#   â€¢ IMPROVEMENT: Added spooler status decoding in logs
 #       - Logs now include human-readable job state (PRINTING, SPOOLING, etc.)
 #       - Improves troubleshooting of printer issues (e.g., out of tape)
 #
-#   • IMPROVEMENT: Increased spooler timeout for real-world printing
+#   â€¢ IMPROVEMENT: Increased spooler timeout for real-world printing
 #       - Display jobs allowed more time to complete
 #
-#   • BEHAVIOR CHANGE:
+#   â€¢ BEHAVIOR CHANGE:
 #       - System now blocks automatic retry after failed batch
 #       - Requires operator intervention instead of silent reprocessing
 #
 # ------------------------------------------------------------
-#  2026-03-21  — Greg Liebig
+#  2026-03-21  â€” Greg Liebig
 #
-# v3.0  — Queue-verified printing
-#   • Removed broken b-PAC callback/event sink handling
-#   • Switched print verification to Windows spooler monitoring
-#   • Added queue-empty guard before batch creation
-#   • Added active PRINTING batch guard to prevent batch storms
-#   • Updated comments to match actual runtime behavior
+# v3.0  â€” Queue-verified printing
+#   â€¢ Removed broken b-PAC callback/event sink handling
+#   â€¢ Switched print verification to Windows spooler monitoring
+#   â€¢ Added queue-empty guard before batch creation
+#   â€¢ Added active PRINTING batch guard to prevent batch storms
+#   â€¢ Updated comments to match actual runtime behavior
 #
-# v0.3  — Printer-safe batch creation
-#   • Added pending label checks before batch creation
-#   • Added printer preflight check BEFORE creating batches
+# v0.3  â€” Printer-safe batch creation
+#   â€¢ Added pending label checks before batch creation
+#   â€¢ Added printer preflight check BEFORE creating batches
 #
-# v0.2  — b-PAC integration
-#   • Replaced P-touch Editor launch with direct b-PAC printing
-#   • Implemented batch printing via StartPrint / PrintOut loop
+# v0.2  â€” b-PAC integration
+#   â€¢ Replaced P-touch Editor launch with direct b-PAC printing
+#   â€¢ Implemented batch printing via StartPrint / PrintOut loop
 #
-# v0.1  — Initial polling service
-#   • DB polling
-#   • Snapshot batch tables
-#   • CSV generation
+# v0.1  â€” Initial polling service
+#   â€¢ DB polling
+#   â€¢ Snapshot batch tables
+#   â€¢ CSV generation
 #
 # ============================================================
 
@@ -176,7 +176,7 @@ CONFIG_PATH = Path(__file__).with_name("config.v4.local.ini")
 def print_banner() -> None:
     line = "=" * 60
     print(line)
-    print(f"{SERVICE_NAME} — {SCRIPT_NAME}")
+    print(f"{SERVICE_NAME} â€” {SCRIPT_NAME}")
     print(f"Version {SERVICE_VERSION}")
     print(f"Host    : {HOSTNAME}")
     print(f"PID     : {PROCESS_ID}")
@@ -465,7 +465,7 @@ def startup_health_check() -> None:
         conn.rollback()
 
     print("Startup health check PASSED.")
-    print(f"Service READY — polling every {POLL_SECONDS} seconds.")
+    print(f"Service READY â€” polling every {POLL_SECONDS} seconds.")
     print("Press Ctrl+C to stop.")
     print("")
 
@@ -790,7 +790,7 @@ def create_display_batch(
 
     exec_sql(
         conn,
-        load_sql("display_snapshot.sql"),
+        load_sql("display_snapshot_v4.sql"),
         {
             "batch_id": batch_id,
             "label_template_id": label_template_id,
