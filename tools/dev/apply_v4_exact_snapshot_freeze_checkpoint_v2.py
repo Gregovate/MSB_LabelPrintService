@@ -357,7 +357,7 @@ def pending_container_ids(conn) -> list[int]:
                         display_postflight_signature,
                     )
 '''
-    if "display_postflight_signature," not in text:
+    if new_display_call not in text:
         text = replace_once(
             text,
             old_display_call,
@@ -372,7 +372,7 @@ def pending_container_ids(conn) -> list[int]:
                         container_postflight_signature,
                     )
 '''
-    if "container_postflight_signature," not in text:
+    if new_container_call not in text:
         text = replace_once(
             text,
             old_container_call,
