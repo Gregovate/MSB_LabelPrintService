@@ -213,15 +213,38 @@ objLine1
 objLine2
 ```
 
-For Wiring, `objChannel` is the controller output/channel number and is the visually dominant field. The LOR Channel Name is supporting metadata in `objLine1`/`objLine2`.
+For Wiring, `objChannel` is the physical controller output/channel number and is the visually dominant field. It is normally a large integer from `1` through `16`.
 
-The service must never split or rewrite `objChannel`; only Channel Name metadata is eligible for safe splitting.
+`objLine1` / `objLine2` are the installer-facing descriptive wiring text. They should contain the field plug identifier and useful connection metadata supplied by the structured FieldWiring system.
+
+The raw LOR Channel Name is source evidence, not automatically print-ready text. It may contain Stage short codes and controller UID/address scaffolding used only to keep the preview organized. LabelPrintService must not print those authoring prefixes merely because they exist in the raw Channel Name, and it must not implement a fragile parser that guesses which prefixes to strip.
+
+For example, a source name such as:
+
+```text
+TC 7B-09 Caroler P1 Mouth Open 2
+```
+
+may resolve semantically to:
+
+```text
+objChannel = 9
+objLine1/objLine2 = field plug P1 + useful Caroler/Mouth Open 2 metadata
+```
+
+The exact ordering and one-line/two-line split of the supplied descriptive metadata remains a rendering/test decision. The Stage code `TC` and controller UID `7B` are not required physical-label text.
+
+The service must never split or rewrite `objChannel`. Only the supplied plug/metadata text is eligible for safe splitting between `objLine1` and `objLine2`.
 
 ## Wiring Label Purpose
 
 The 12 mm Wiring label is intentionally smaller than the permanent identity labels. The smaller label is a field hookup/configuration label, not a permanent asset identity label.
 
-The visual goal is to improve field readability beyond handheld-printer labels by showing the controller output number prominently while retaining Channel Name metadata for confirmation.
+The visual goal is to improve field readability beyond handheld-printer labels by showing the physical controller output/channel number prominently while retaining the field plug and useful connection metadata for confirmation.
+
+The channel number alone does not identify a particular controller. Specific controller identity, Stage, network, UID/address, universe, and other context remain available through the wiring system rather than being permanently encoded into every descriptive wiring line.
+
+Wiring request/snapshot implementation remains gated until FieldWiring exposes the structured channel/output, plug, and printable metadata fields unambiguously. v4 must not block Setup-critical Display/Container work on that future mapping.
 
 ## QR Payload Compatibility
 
@@ -563,7 +586,7 @@ Not required to complete the immediate Setup-critical v4 repair unless acceptanc
 - production Location printing on QL-820NWB;
 - final QL media identity/end-of-roll decoding;
 - future Label Printing application;
-- full FieldWiring print-request UI;
+- full FieldWiring print-request UI and structured channel/plug/metadata source mapping;
 - Controller printing until Controller assignment/family workflow is ready;
 - application-level automatic tape-out boundary-label replay;
 - unrelated cleanup of duplicate historical DB constraints.
