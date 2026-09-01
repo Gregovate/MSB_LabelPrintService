@@ -4,6 +4,7 @@
    Existing deployed full-URL labels remain supported by Scan.
    Parameters:
      %(batch_id)s
+     %(container_ids)s
    ====================================================================== */
 
 INSERT INTO ops.container_label_batch_item (
@@ -26,4 +27,5 @@ SELECT
     END AS label_orientation
 FROM ref.container c
 WHERE c.print_label = true
+  AND c.container_id = ANY(%(container_ids)s)
 ON CONFLICT (container_label_batch_id, container_id) DO NOTHING;

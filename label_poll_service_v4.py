@@ -17,6 +17,12 @@ import win32print
 import socket
 import os
 
+from v4_preflight_runtime import (
+    run_operator_preflight_loop,
+    snmp_family_preflight,
+    validate_runtime_prerequisites,
+)
+
 # ============================================================
 # ============================================================
 # MSB Label Polling Service
@@ -215,6 +221,27 @@ LOG_FILE = LOG_DIR / "label_service.log"
 POLL_SECONDS = int(CONFIG["service"]["poll_seconds"])
 STARTED_BY_PERSON_ID = int(CONFIG["service"]["started_by_person_id"])
 STARTED_BY_TEXT = CONFIG["service"]["started_by_text"]
+
+SNMP_OID = CONFIG.get(
+    "printing",
+    "snmp_oid",
+    fallback="1.3.6.1.4.1.2435.3.3.9.1.6.1.0",
+)
+SNMP_COMMUNITY = CONFIG.get(
+    "printing",
+    "snmp_community",
+    fallback="public",
+)
+SNMP_PORT = CONFIG.getint(
+    "printing",
+    "snmp_port",
+    fallback=161,
+)
+SNMP_TIMEOUT_SECONDS = CONFIG.getfloat(
+    "printing",
+    "snmp_timeout_seconds",
+    fallback=3.0,
+)
 
 DISPLAY_CSV = Path(CONFIG["csv_files"]["display"])
 CONTAINER_VERTICAL_CSV = Path(CONFIG["csv_files"]["container_vertical"])
@@ -467,6 +494,182 @@ def startup_health_check() -> None:
     print("")
 
 # ============================================================
+# v4 selected-workload full preflight
+# ============================================================
+
+def pending_display_workload_signature(
+    conn,
+    label_template_id: int,
+) -> str:
+    ids = query_value(
+        conn,
+        """
+        SELECT COALESCE(
+            string_agg(
+                display_id::text
+                || ':' || COALESCE(display_name, '')
+                || ':' || COALESCE(label_template_id::text, ''),
+                E'\n'
+                ORDER BY display_id
+            ),
+            ''
+        )
+        FROM ref.display
+        WHERE print_label = true
+          AND label_template_id = %(label_template_id)s;
+        """,
+        {"label_template_id": label_template_id},
+    )
+    return f"DISPLAY:{label_template_id}:{ids or ''}"
+
+
+def pending_container_workload_signature(conn) -> str:
+    ids = query_value(
+        conn,
+        """
+        SELECT COALESCE(
+            string_agg(
+                container_id::text
+                || ':' || COALESCE(container_type_id::text, ''),
+                E'\n'
+                ORDER BY container_id
+            ),
+            ''
+        )
+        FROM ref.container
+        WHERE print_label = true;
+        """,
+    )
+    return f"CONTAINER:{ids or ''}"
+
+
+def pending_display_ids(
+    conn,
+    label_template_id: int,
+) -> list[int]:
+    rows = query_rows(
+        conn,
+        """
+        SELECT display_id
+        FROM ref.display
+        WHERE print_label = true
+          AND label_template_id = %(label_template_id)s
+        ORDER BY display_id;
+        """,
+        {"label_template_id": label_template_id},
+    )
+    return [int(row["display_id"]) for row in rows]
+
+
+def pending_container_ids(conn) -> list[int]:
+    rows = query_rows(
+        conn,
+        """
+        SELECT container_id
+        FROM ref.container
+        WHERE print_label = true
+        ORDER BY container_id;
+        """,
+    )
+    return [int(row["container_id"]) for row in rows]
+
+
+def run_selected_workload_preflight(
+    *,
+    workload_name: str,
+    family: dict[str, Any],
+    template_specs: list[tuple[Path, tuple[str, ...]]],
+    sql_filenames: tuple[str, ...],
+    csv_paths: tuple[Path, ...],
+) -> bool:
+    """
+    Run the complete deterministic v4 pre-batch gate for one selected
+    compatible workload. This function performs no PostgreSQL writes.
+    """
+    printer = family["printer"]
+
+    def check_once() -> tuple[bool, str]:
+        ok, reason = validate_runtime_prerequisites(
+            required_dirs=(
+                BASE_DIR,
+                SQL_DIR,
+                CSV_DIR,
+                STATE_DIR,
+                LOG_DIR,
+                BATCH_LOG_DIR,
+            ),
+            sql_paths=tuple(
+                SQL_DIR / filename
+                for filename in sql_filenames
+            ),
+            csv_paths=csv_paths,
+        )
+        if not ok:
+            return False, reason
+
+        if not printer["enabled"]:
+            return False, (
+                f"Configured printer '{printer['key']}' is disabled "
+                f"for {workload_name}."
+            )
+
+        if family["printer_key"] != "pt_p950nw":
+            return False, (
+                f"Production SNMP preflight is not yet approved for "
+                f"printer family '{family['printer_key']}'."
+            )
+
+        ok, reason = snmp_family_preflight(
+            host=printer["host"],
+            family_code=family["code"],
+            expected_width_mm=int(family["media_width_mm"]),
+            expected_media_type=str(family["media_type"]),
+            oid=SNMP_OID,
+            community=SNMP_COMMUNITY,
+            port=SNMP_PORT,
+            timeout=SNMP_TIMEOUT_SECONDS,
+        )
+        if not ok:
+            return False, reason
+
+        printer_name = printer["queue_name"]
+
+        for template_path, required_objects in template_specs:
+            ok, reason = printer_preflight(
+                template_path=template_path,
+                printer_name=printer_name,
+                required_objects=required_objects,
+            )
+            if not ok:
+                return False, reason
+
+        try:
+            queue_jobs = get_print_jobs(printer_name)
+        except Exception as exc:
+            return False, (
+                f"Could not inspect Windows printer queue "
+                f"'{printer_name}': {exc}"
+            )
+
+        if queue_jobs:
+            return False, (
+                f"Printer queue '{printer_name}' is not empty: "
+                f"{summarize_print_jobs(queue_jobs)}. "
+                "Resolve the queue safely, then press Retry."
+            )
+
+        return True, (
+            f"{workload_name} full preflight passed for "
+            f"{family['code']} on '{printer_name}'."
+        )
+
+    return run_operator_preflight_loop(
+        workload_name=workload_name,
+        check_once=check_once,
+    )
+
+
+# ============================================================
 # Printer preflight
 # ============================================================
 
@@ -572,7 +775,7 @@ def printer_preflight(
     finally:
         if doc is not None:
             try:
-                _ = doc.Close
+                _ = doc.Close()
             except Exception:
                 pass
 
@@ -807,15 +1010,71 @@ def clear_lock() -> None:
 def create_display_batch(
     conn,
     label_template_id: int,
+    expected_signature: str,
 ) -> int | None:
-    person_id, person_text = get_display_batch_actor(
+    display_ids = pending_display_ids(conn, label_template_id)
+    if not display_ids:
+        return None
+
+    locked_rows = query_rows(
+        conn,
+        """
+        SELECT
+            display_id,
+            updated_by_person_id,
+            updated_by
+        FROM ref.display
+        WHERE display_id = ANY(%(display_ids)s)
+          AND print_label = true
+          AND label_template_id = %(label_template_id)s
+        ORDER BY display_id
+        FOR UPDATE;
+        """,
+        {
+            "display_ids": display_ids,
+            "label_template_id": label_template_id,
+        },
+    )
+    locked_ids = [int(row["display_id"]) for row in locked_rows]
+
+    if locked_ids != display_ids:
+        logging.warning(
+            "Display request set changed while acquiring snapshot locks; "
+            "no batch created. expected_ids=%s locked_ids=%s",
+            display_ids,
+            locked_ids,
+        )
+        return None
+
+    locked_signature = pending_display_workload_signature(
         conn,
         label_template_id,
     )
+    if locked_signature != expected_signature:
+        logging.warning(
+            "Display request/render state changed before snapshot freeze; "
+            "no batch created. expected=%s locked=%s",
+            expected_signature,
+            locked_signature,
+        )
+        return None
+
+    actors = {
+        (row["updated_by_person_id"], row["updated_by"])
+        for row in locked_rows
+    }
+    if len(actors) > 1:
+        logging.warning(
+            "Multiple actors detected in frozen Display workload. Using first row."
+        )
+
+    first_row = locked_rows[0]
+    person_id = first_row["updated_by_person_id"]
+    person_text = first_row["updated_by"]
 
     if person_id is None:
         logging.warning(
-            "Display batch actor not found from ref.display audit fields. "
+            "Display batch actor not found from frozen ref.display rows. "
             "Falling back to service identity."
         )
         person_id = STARTED_BY_PERSON_ID
@@ -854,41 +1113,94 @@ def create_display_batch(
         {
             "batch_id": batch_id,
             "label_template_id": label_template_id,
+            "display_ids": display_ids,
         },
     )
 
-    row_count = query_value(
+    row_count = int(query_value(
         conn,
         "SELECT COUNT(*) FROM ops.display_label_batch_item WHERE display_label_batch_id = %(batch_id)s;",
         {"batch_id": batch_id},
-    )
+    ) or 0)
 
-    if row_count == 0:
-        exec_sql(
-            conn,
-            "DELETE FROM ops.display_label_batch WHERE display_label_batch_id = %(batch_id)s;",
-            {"batch_id": batch_id},
+    if row_count != len(display_ids):
+        raise RuntimeError(
+            f"Display snapshot row count mismatch: expected {len(display_ids)}, "
+            f"created {row_count}. Transaction must roll back."
         )
-        return None
 
     logging.info(
-        "Created display batch %s label_template_id=%s "
+        "Created display batch %s label_template_id=%s rows=%s "
         "started_by_person_id=%s started_by_text=%s",
         batch_id,
         label_template_id,
+        len(display_ids),
         person_id,
         person_text,
     )
 
     return int(batch_id)
 
+def create_container_batch(
+    conn,
+    expected_signature: str,
+) -> int | None:
+    container_ids = pending_container_ids(conn)
+    if not container_ids:
+        return None
 
-def create_container_batch(conn) -> int | None:
-    person_id, person_text = get_container_batch_actor(conn)
+    locked_rows = query_rows(
+        conn,
+        """
+        SELECT
+            container_id,
+            updated_by_person_id,
+            updated_by
+        FROM ref.container
+        WHERE container_id = ANY(%(container_ids)s)
+          AND print_label = true
+        ORDER BY container_id
+        FOR UPDATE;
+        """,
+        {"container_ids": container_ids},
+    )
+    locked_ids = [int(row["container_id"]) for row in locked_rows]
+
+    if locked_ids != container_ids:
+        logging.warning(
+            "Container request set changed while acquiring snapshot locks; "
+            "no batch created. expected_ids=%s locked_ids=%s",
+            container_ids,
+            locked_ids,
+        )
+        return None
+
+    locked_signature = pending_container_workload_signature(conn)
+    if locked_signature != expected_signature:
+        logging.warning(
+            "Container request/orientation state changed before snapshot freeze; "
+            "no batch created. expected=%s locked=%s",
+            expected_signature,
+            locked_signature,
+        )
+        return None
+
+    actors = {
+        (row["updated_by_person_id"], row["updated_by"])
+        for row in locked_rows
+    }
+    if len(actors) > 1:
+        logging.warning(
+            "Multiple actors detected in frozen Container workload. Using first row."
+        )
+
+    first_row = locked_rows[0]
+    person_id = first_row["updated_by_person_id"]
+    person_text = first_row["updated_by"]
 
     if person_id is None:
         logging.warning(
-            "Container batch actor not found from ref.container audit fields. "
+            "Container batch actor not found from frozen ref.container rows. "
             "Falling back to service identity."
         )
         person_id = STARTED_BY_PERSON_ID
@@ -913,31 +1225,37 @@ def create_container_batch(conn) -> int | None:
         },
     )
 
-    exec_sql(conn, load_sql("container_snapshot_v4.sql"), {"batch_id": batch_id})
+    exec_sql(
+        conn,
+        load_sql("container_snapshot_v4.sql"),
+        {
+            "batch_id": batch_id,
+            "container_ids": container_ids,
+        },
+    )
 
-    row_count = query_value(
+    row_count = int(query_value(
         conn,
         "SELECT COUNT(*) FROM ops.container_label_batch_item WHERE container_label_batch_id = %(batch_id)s;",
         {"batch_id": batch_id},
-    )
+    ) or 0)
 
-    if row_count == 0:
-        exec_sql(
-            conn,
-            "DELETE FROM ops.container_label_batch WHERE container_label_batch_id = %(batch_id)s;",
-            {"batch_id": batch_id},
+    if row_count != len(container_ids):
+        raise RuntimeError(
+            f"Container snapshot row count mismatch: expected {len(container_ids)}, "
+            f"created {row_count}. Transaction must roll back."
         )
-        return None
 
     logging.info(
-        "Created container batch %s started_by_person_id=%s started_by_text=%s",
+        "Created container batch %s rows=%s "
+        "started_by_person_id=%s started_by_text=%s",
         batch_id,
+        len(container_ids),
         person_id,
         person_text,
     )
 
     return int(batch_id)
-
 
 # ============================================================
 # CSV EXPORT (kept for audit/debug/fallback)
@@ -1628,6 +1946,10 @@ def main() -> None:
 
     startup_health_check()
 
+    # Cancel suppresses repeated dialogs for the exact same pending
+    # request set until the set changes or the service restarts.
+    cancelled_preflight_signature: str | None = None
+
     while True:
         try:
             logging.info("Poll tick - checking for pending labels.")
@@ -1688,6 +2010,7 @@ def main() -> None:
                 )
 
                 if display_pending == 0 and container_pending == 0:
+                    cancelled_preflight_signature = None
                     logging.info("No pending labels. Service idle.")
                     conn.rollback()
                     clear_lock()
@@ -1827,58 +2150,83 @@ def main() -> None:
                             )
                         )
 
-                    display_preflight_failed = False
-                    for template_path, required_objects in (
-                        required_display_templates
-                    ):
-                        preflight_ok, preflight_msg = printer_preflight(
-                            template_path=template_path,
-                            printer_name=selected_printer_name,
-                            required_objects=required_objects,
+                    display_preflight_signature = (
+                        pending_display_workload_signature(
+                            conn,
+                            int(
+                                selected_display_family[
+                                    "label_template_id"
+                                ]
+                            ),
                         )
-
-                        if not preflight_ok:
-                            logging.error(
-                                "Display preflight failed: %s",
-                                preflight_msg,
-                            )
-                            print(
-                                f"Display preflight failed: "
-                                f"{preflight_msg}"
-                            )
-                            display_preflight_failed = True
-                            break
-
-                        logging.info(
-                            "Display preflight passed: %s",
-                            preflight_msg,
-                        )
-                        print(
-                            f"Display preflight passed: "
-                            f"{preflight_msg}"
-                        )
-
-                    if display_preflight_failed:
-                        conn.rollback()
-                        clear_lock()
-                        time.sleep(POLL_SECONDS)
-                        continue
-
-                    queue_jobs = get_print_jobs(
-                        selected_printer_name
                     )
 
-                    if queue_jobs:
-                        queue_msg = (
-                            f"Printer queue is not empty: "
-                            f"{summarize_print_jobs(queue_jobs)}"
+                    if (
+                        cancelled_preflight_signature
+                        == display_preflight_signature
+                    ):
+                        logging.info(
+                            "Preflight remains cancelled for unchanged "
+                            "Display request set; waiting for request change "
+                            "or service restart. signature=%s",
+                            display_preflight_signature,
                         )
-                        logging.error(queue_msg)
-                        print(queue_msg)
                         conn.rollback()
                         clear_lock()
                         time.sleep(POLL_SECONDS)
                         continue
+
+                    display_preflight_passed = (
+                        run_selected_workload_preflight(
+                            workload_name=(
+                                f"Display labels ({family_code})"
+                            ),
+                            family=selected_family_config,
+                            template_specs=required_display_templates,
+                            sql_filenames=(
+                                "display_snapshot_v4.sql",
+                                "display_export.sql",
+                                "display_finalized.sql",
+                            ),
+                            csv_paths=(DISPLAY_CSV,),
+                        )
+                    )
+
+                    if not display_preflight_passed:
+                        cancelled_preflight_signature = (
+                            display_preflight_signature
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    display_postflight_signature = (
+                        pending_display_workload_signature(
+                            conn,
+                            int(
+                                selected_display_family[
+                                    "label_template_id"
+                                ]
+                            ),
+                        )
+                    )
+                    if (
+                        display_postflight_signature
+                        != display_preflight_signature
+                    ):
+                        logging.warning(
+                            "Display pending workload changed during preflight; "
+                            "no batch will be created. before=%s after=%s",
+                            display_preflight_signature,
+                            display_postflight_signature,
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    cancelled_preflight_signature = None
 
                     if container_pending > 0:
                         logging.warning(
@@ -1941,57 +2289,73 @@ def main() -> None:
                             )
                         )
 
-                    container_preflight_failed = False
-                    for template_path, required_objects in (
-                        required_container_templates
-                    ):
-                        preflight_ok, preflight_msg = printer_preflight(
-                            template_path=template_path,
-                            printer_name=container_printer_name,
-                            required_objects=required_objects,
-                        )
-
-                        if not preflight_ok:
-                            logging.error(
-                                "Container preflight failed: %s",
-                                preflight_msg,
-                            )
-                            print(
-                                f"Container preflight failed: "
-                                f"{preflight_msg}"
-                            )
-                            container_preflight_failed = True
-                            break
-
-                        logging.info(
-                            "Container preflight passed: %s",
-                            preflight_msg,
-                        )
-                        print(
-                            f"Container preflight passed: "
-                            f"{preflight_msg}"
-                        )
-
-                    if container_preflight_failed:
-                        conn.rollback()
-                        clear_lock()
-                        time.sleep(POLL_SECONDS)
-                        continue
-
-                    queue_jobs = get_print_jobs(
-                        container_printer_name
+                    container_preflight_signature = (
+                        pending_container_workload_signature(conn)
                     )
-                    if queue_jobs:
-                        queue_msg = (
-                            f"Printer queue is not empty: "
-                            f"{summarize_print_jobs(queue_jobs)}"
+
+                    if (
+                        cancelled_preflight_signature
+                        == container_preflight_signature
+                    ):
+                        logging.info(
+                            "Preflight remains cancelled for unchanged "
+                            "Container request set; waiting for request change "
+                            "or service restart. signature=%s",
+                            container_preflight_signature,
                         )
-                        logging.error(queue_msg)
-                        print(queue_msg)
                         conn.rollback()
                         clear_lock()
                         time.sleep(POLL_SECONDS)
                         continue
+
+                    container_preflight_passed = (
+                        run_selected_workload_preflight(
+                            workload_name="Container labels (36 mm)",
+                            family=LABEL_FAMILIES[
+                                "QR_36MM_HORIZONTAL"
+                            ],
+                            template_specs=required_container_templates,
+                            sql_filenames=(
+                                "container_snapshot_v4.sql",
+                                "container_export_vertical.sql",
+                                "container_export_horizontal.sql",
+                                "container_finalized.sql",
+                            ),
+                            csv_paths=(
+                                CONTAINER_VERTICAL_CSV,
+                                CONTAINER_HORIZONTAL_CSV,
+                            ),
+                        )
+                    )
+
+                    if not container_preflight_passed:
+                        cancelled_preflight_signature = (
+                            container_preflight_signature
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    container_postflight_signature = (
+                        pending_container_workload_signature(conn)
+                    )
+                    if (
+                        container_postflight_signature
+                        != container_preflight_signature
+                    ):
+                        logging.warning(
+                            "Container pending workload changed during preflight; "
+                            "no batch will be created. before=%s after=%s",
+                            container_preflight_signature,
+                            container_postflight_signature,
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    cancelled_preflight_signature = None
 
                 # --------------------------------------------------
                 # Step 3: Only create batches AFTER printer passes Updated 04/16/26 for warning and loop
@@ -2003,9 +2367,13 @@ def main() -> None:
                     display_batch_id = create_display_batch(
                         conn,
                         int(selected_display_family["label_template_id"]),
+                        display_postflight_signature,
                     )
                 elif container_pending > 0:
-                    container_batch_id = create_container_batch(conn)
+                    container_batch_id = create_container_batch(
+                        conn,
+                        container_postflight_signature,
+                    )
 
                 logging.info(
                     "Batch creation results - display_batch_id=%s container_batch_id=%s",

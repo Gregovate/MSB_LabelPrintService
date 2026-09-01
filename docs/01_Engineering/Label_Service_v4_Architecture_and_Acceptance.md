@@ -659,6 +659,66 @@ Container compact payload printing is enabled first in v4. Acceptance must prove
 - v3.4 rollback still snapshots/prints the original full Container URL;
 - Display v4 QR payload remains the full URL until a separate Display migration is accepted.
 
+## v4 Full Preflight and Operator Retry/Cancel Gate
+
+The v4 branch implementation uses Brother SNMP status as the physical
+printer/media authority for PT-P950NW preflight. The decoder uses the same
+documented 32-byte Brother status structure and field offsets already proven
+by the repository diagnostic tools.
+
+For the selected compatible Display or Container workload, the pre-batch gate
+checks:
+
+```text
+required runtime directories exist and are writable
+required SQL files exist and are UTF-8 readable
+target CSV/output paths are writable
+configured printer is enabled
+Brother SNMP status responds
+required tape width is loaded
+required tape type is laminated tape
+cover is closed / media is present / end-of-media is not active
+every required LBX exists and opens in b-PAC
+every required LBX contains the expected named objects
+Windows printer queue can be inspected
+Windows printer queue is empty/safe
+```
+
+Active/FAILED PostgreSQL batch guards remain before this gate.
+
+If any gate fails, v4 shows one blocking Windows **Retry / Cancel** dialog in
+the interactive PRINT-SERVER session. Retry reruns the entire gate. No
+execution batch header/item or source `print_label` mutation is allowed before
+the gate passes.
+
+Cancel leaves pending source requests untouched and creates no execution
+batch. To prevent a 15-second popup storm, v4 suppresses another dialog for the
+exact same pending request set until that set changes or the service restarts.
+The suppression is in-memory runtime state only and does not mutate
+PostgreSQL.
+
+After a Retry path finally passes full preflight, v4 re-reads a workload
+signature before batch creation. Display signatures include `display_id`,
+`display_name`, and `label_template_id`; Container signatures include
+`container_id` and `container_type_id`. If that signature changed while the
+operator dialog/preflight loop was active, v4 creates no batch and returns to a
+fresh poll so the new workload is rebuilt and preflighted before any snapshot
+state is written.
+
+Immediately before the batch header is inserted, v4 freezes the exact pending
+asset IDs, acquires row locks on those selected source rows, and rechecks the
+validated workload signature again. The v4 snapshot SQL is restricted to those
+exact IDs. The frozen rows also supply batch requester attribution. This closes
+the final race between preflight and snapshot creation: a newly requested asset
+cannot be swept into a batch that was not preflighted, and a selected row cannot
+change its render-affecting source fields after the freeze until the snapshot
+transaction completes.
+
+Controlled acceptance must deliberately prove wrong 24/36 mm media, no
+cassette, cover open, unavailable printer, unsafe queue, missing runtime
+file/path, Retry recovery, Cancel suppression, and zero PostgreSQL execution
+state change on every failed preflight.
+
 ## Deferred / Future Work
 
 Not required to complete the immediate Setup-critical v4 repair unless acceptance proves otherwise:

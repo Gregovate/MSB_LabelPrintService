@@ -59,6 +59,11 @@ Cancel must:
 - create no batch header/items;
 - require no PostgreSQL cleanup.
 
+To prevent a 15-second popup storm, v4 suppresses another preflight dialog for
+that exact unchanged pending request set. The same requests can be reconsidered
+after the pending selection changes or the service is restarted. This
+suppression is in-memory only and does not alter PostgreSQL request state.
+
 ## Wrong Cassette
 
 The dialog should state both required and detected media when detection is available.
