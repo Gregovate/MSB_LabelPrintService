@@ -843,6 +843,81 @@ def pending_display_families(conn) -> list[dict[str, Any]]:
     )
 
 
+def pending_display_preflight_plan(
+    conn,
+    label_template_id: int,
+) -> dict[str, Any] | None:
+    """Return Display render counts + signature from one DB statement."""
+    rows = query_rows(
+        conn,
+        """
+        SELECT
+            d.label_template_id,
+            lt.label_template_code,
+            COUNT(*)::integer AS pending_count,
+            COUNT(*) FILTER (
+                WHERE LENGTH(d.display_name) <= 20
+                   OR d.display_name !~ '^[^-]+-[^-]+-'
+            )::integer AS one_line_count,
+            COUNT(*) FILTER (
+                WHERE LENGTH(d.display_name) > 20
+                  AND d.display_name ~ '^[^-]+-[^-]+-'
+            )::integer AS two_line_count,
+            'DISPLAY:' || d.label_template_id::text || ':' ||
+            COALESCE(
+                string_agg(
+                    d.display_id::text
+                    || ':' || COALESCE(d.display_name, '')
+                    || ':' || COALESCE(d.label_template_id::text, ''),
+                    E'\n'
+                    ORDER BY d.display_id
+                ),
+                ''
+            ) AS workload_signature
+        FROM ref.display d
+        JOIN ref.label_template lt
+          ON lt.label_template_id = d.label_template_id
+        WHERE d.print_label = true
+          AND d.label_template_id = %(label_template_id)s
+        GROUP BY
+            d.label_template_id,
+            lt.label_template_code;
+        """,
+        {"label_template_id": label_template_id},
+    )
+    return rows[0] if rows else None
+
+
+def pending_container_preflight_plan(conn) -> dict[str, Any]:
+    """Return Container orientation counts + signature from one DB statement."""
+    rows = query_rows(
+        conn,
+        """
+        SELECT
+            COUNT(*)::integer AS pending_count,
+            COUNT(*) FILTER (
+                WHERE container_type_id = 1
+            )::integer AS vertical_count,
+            COUNT(*) FILTER (
+                WHERE container_type_id IS DISTINCT FROM 1
+            )::integer AS horizontal_count,
+            'CONTAINER:' ||
+            COALESCE(
+                string_agg(
+                    container_id::text
+                    || ':' || COALESCE(container_type_id::text, ''),
+                    E'\n'
+                    ORDER BY container_id
+                ),
+                ''
+            ) AS workload_signature
+        FROM ref.container
+        WHERE print_label = true;
+        """,
+    )
+    return rows[0]
+
+
 def pending_container_count(conn) -> int:
     return int(query_value(
         conn,
@@ -2066,8 +2141,22 @@ def main() -> None:
                 ] = []
 
                 if display_pending > 0:
+                    display_plan = pending_display_preflight_plan(
+                        conn,
+                        int(selected_display_family["label_template_id"]),
+                    )
+                    if display_plan is None:
+                        logging.warning(
+                            "Selected Display workload disappeared before "
+                            "preflight planning; restarting poll."
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
                     family_code = str(
-                        selected_display_family["label_template_code"]
+                        display_plan["label_template_code"]
                     )
 
                     if family_code not in (
@@ -2106,7 +2195,7 @@ def main() -> None:
                     )
 
                     if int(
-                        selected_display_family["one_line_count"]
+                        display_plan["one_line_count"]
                     ) > 0:
                         template = selected_family_config[
                             "template_1_line"
@@ -2128,7 +2217,7 @@ def main() -> None:
                         )
 
                     if int(
-                        selected_display_family["two_line_count"]
+                        display_plan["two_line_count"]
                     ) > 0:
                         template = selected_family_config[
                             "template_2_line"
@@ -2150,15 +2239,8 @@ def main() -> None:
                             )
                         )
 
-                    display_preflight_signature = (
-                        pending_display_workload_signature(
-                            conn,
-                            int(
-                                selected_display_family[
-                                    "label_template_id"
-                                ]
-                            ),
-                        )
+                    display_preflight_signature = str(
+                        display_plan["workload_signature"]
                     )
 
                     if (
@@ -2236,7 +2318,37 @@ def main() -> None:
                         )
 
                 elif container_pending > 0:
-                    container_orientations = pending_container_orientations(conn)
+                    container_plan = pending_container_preflight_plan(conn)
+                    if int(container_plan["pending_count"]) == 0:
+                        logging.warning(
+                            "Pending Container workload disappeared before "
+                            "preflight planning; restarting poll."
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    container_orientations: list[dict[str, Any]] = []
+                    if int(container_plan["vertical_count"]) > 0:
+                        container_orientations.append(
+                            {
+                                "label_orientation": "VERTICAL",
+                                "pending_count": int(
+                                    container_plan["vertical_count"]
+                                ),
+                            }
+                        )
+                    if int(container_plan["horizontal_count"]) > 0:
+                        container_orientations.append(
+                            {
+                                "label_orientation": "HORIZONTAL",
+                                "pending_count": int(
+                                    container_plan["horizontal_count"]
+                                ),
+                            }
+                        )
+
                     container_printer_name = None
                     required_container_templates: list[
                         tuple[Path, tuple[str, ...]]
@@ -2289,8 +2401,8 @@ def main() -> None:
                             )
                         )
 
-                    container_preflight_signature = (
-                        pending_container_workload_signature(conn)
+                    container_preflight_signature = str(
+                        container_plan["workload_signature"]
                     )
 
                     if (

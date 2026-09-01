@@ -714,6 +714,13 @@ cannot be swept into a batch that was not preflighted, and a selected row cannot
 change its render-affecting source fields after the freeze until the snapshot
 transaction completes.
 
+The physical preflight plan itself is also atomic with its initial workload
+signature. For Displays, one PostgreSQL statement returns the selected family,
+one-line count, two-line count, and signature. For Containers, one statement
+returns horizontal count, vertical count, and signature. This prevents a request
+arriving between template-plan discovery and signature capture from introducing
+an unpreflighted physical template into the later exact-ID snapshot.
+
 Controlled acceptance must deliberately prove wrong 24/36 mm media, no
 cassette, cover open, unavailable printer, unsafe queue, missing runtime
 file/path, Retry recovery, Cancel suppression, and zero PostgreSQL execution
