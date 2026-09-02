@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
 import sys
 from datetime import datetime
@@ -26,19 +27,16 @@ DEFAULT_EVIDENCE_DIR = Path(
 DEFAULT_PRINTER = "Brother PT-P950NW"
 DEFAULT_HOST = "192.168.5.12"
 DEFAULT_OID = "1.3.6.1.4.1.2435.3.3.9.1.6.1.0"
+DEFAULT_FIXTURE_CSV = (
+    REPO_ROOT
+    / "templates"
+    / "pt_p950nw"
+    / "csv"
+    / "wiring_label_12mm_real_fieldlead_test.csv"
+)
 
 REQUIRED_WIDTH_MM = 12
 PRINT_FLAGS = 0x200 | 0x400 | 0x04000000
-
-TEST_VALUES = {
-    "objChannel": "09",
-    "objLine1": "FOLDOVER-PROBE-A",
-    "objLine2": "FOLDOVER-PROBE-B",
-    "objChannel_right": "09",
-    "objLine1_right": "FOLDOVER-PROBE-A",
-    "objLine2_right": "FOLDOVER-PROBE-B",
-}
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -55,11 +53,58 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=161)
     parser.add_argument("--timeout", type=float, default=3.0)
     parser.add_argument(
+        "--fixture-csv",
+        type=Path,
+        default=DEFAULT_FIXTURE_CSV,
+        help="Tracked CSV containing real FieldWiring label fixtures.",
+    )
+    parser.add_argument(
+        "--fixture-row",
+        type=int,
+        default=1,
+        help="One-based data-row number from the fixture CSV. Default: 1.",
+    )
+    parser.add_argument(
         "--evidence-dir",
         type=Path,
         default=DEFAULT_EVIDENCE_DIR,
     )
     return parser.parse_args()
+
+
+def load_fixture(path: Path, row_number: int) -> dict[str, str]:
+    if row_number < 1:
+        raise ValueError("--fixture-row must be at least 1")
+
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    if row_number > len(rows):
+        raise ValueError(
+            f"Fixture row {row_number} does not exist; CSV has {len(rows)} rows"
+        )
+
+    row = rows[row_number - 1]
+    channel = (row.get("output_plug") or "").strip()
+    line1 = (row.get("line1") or "").strip()
+    line2 = (row.get("line2") or "").strip()
+
+    if not channel or not line1:
+        raise ValueError(
+            f"Fixture row {row_number} requires output_plug and line1"
+        )
+
+    if channel.isdigit():
+        channel = channel.zfill(2)
+
+    return {
+        "objChannel": channel,
+        "objLine1": line1,
+        "objLine2": line2,
+        "objChannel_right": channel,
+        "objLine1_right": line1,
+        "objLine2_right": line2,
+    }
 
 
 def close_document(document: object, print_started: bool) -> list[str]:
@@ -84,6 +129,7 @@ def close_document(document: object, print_started: bool) -> list[str]:
 def main() -> int:
     args = parse_args()
     template = args.template.resolve()
+    fixture_csv = args.fixture_csv.resolve()
 
     logging.basicConfig(
         level=logging.INFO,
@@ -92,6 +138,10 @@ def main() -> int:
 
     if not template.is_file():
         raise FileNotFoundError(f"Template does not exist: {template}")
+    if not fixture_csv.is_file():
+        raise FileNotFoundError(f"Fixture CSV does not exist: {fixture_csv}")
+
+    test_values = load_fixture(fixture_csv, args.fixture_row)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     evidence_lines = [
@@ -100,6 +150,8 @@ def main() -> int:
         f"template={template}",
         f"printer={args.printer}",
         f"host={args.host}",
+        f"fixture={fixture_csv}",
+        f"fixture_row={args.fixture_row}",
     ]
 
     print("Checking the PT-P950NW before any b-PAC print operation...")
@@ -131,7 +183,7 @@ def main() -> int:
     print_started = False
     try:
         objects: dict[str, object] = {}
-        for object_name, value in TEST_VALUES.items():
+        for object_name, value in test_values.items():
             obj = document.GetObject(object_name)
             if obj is None:
                 raise RuntimeError(
@@ -139,7 +191,7 @@ def main() -> int:
                 )
             objects[object_name] = obj
 
-        for object_name, value in TEST_VALUES.items():
+        for object_name, value in test_values.items():
             objects[object_name].Text = value
             evidence_lines.append(f"{object_name}={value}")
             print(f"Assigned {object_name}={value!r}")
@@ -180,9 +232,9 @@ def main() -> int:
     print(f"Evidence: {evidence_path}")
     print()
     print("Physical acceptance check:")
-    print("  Both halves show Channel 09.")
-    print("  Both halves show FOLDOVER-PROBE-A.")
-    print("  Both halves show FOLDOVER-PROBE-B.")
+    print(f"  Both halves show Channel {test_values['objChannel']}.")
+    print(f"  Both halves show {test_values['objLine1']}.")
+    print(f"  Both halves show {test_values['objLine2']}.")
     print("  Text orientation is correct after folding around a wire.")
     return 0
 
