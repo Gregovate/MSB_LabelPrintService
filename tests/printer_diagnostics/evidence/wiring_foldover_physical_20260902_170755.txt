@@ -1,0 +1,21 @@
+MSB 12 mm Wiring fold-over physical print test
+timestamp=20260902_170755
+template=C:\MSB_LabelService\templates\pt_p950nw\wiring_label_2_line_horz_12mm_double_sided.lbx
+printer=Brother PT-P950NW
+host=192.168.5.12
+fixture=C:\MSB_LabelService\templates\pt_p950nw\csv\wiring_label_12mm_real_fieldlead_test.csv
+fixture_row=1
+preflight_detail=SNMP OK: 12 mm Laminated tape; raw=80 20 42 30 70 30 04 00 00 00 0C 01 00 00 00 00 00 00 00 00 00 00 00 00 01 08 00 00 00 00 00 00
+preflight=PASS
+objChannel=08
+objLine1=UncleLouis Standing
+objLine2=Pants Master Prop
+objChannel_right=08
+objLine1_right=UncleLouis Standing
+objLine2_right=Pants Master Prop
+SetPrinter=True
+StartPrint flags=0x04000600 result=True
+PrintOut copies=1 result=True
+EndPrint result=True
+Close result=True
+submission=PASS
