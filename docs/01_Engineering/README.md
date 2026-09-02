@@ -5,14 +5,15 @@
 | Document Type | README / Engineering Documentation Portal |
 | System | MSB Label Print Service / PRINT-SERVER |
 | Status | CURRENT |
-| Last Reviewed | 2026-09-01 |
+| Last Reviewed | 2026-09-02 |
 
 Engineering architecture, implementation contracts, acceptance requirements, and known technical limitations belong in this folder. Operational procedures belong under `docs/02_Operational_SOPs/`.
 
 ## Current / Active Engineering Work
 
-- [Label Service v4 — Architecture and Acceptance Contract](Label_Service_v4_Architecture_and_Acceptance.md) — authoritative v4 design record for logical label families, physical templates, printer/media mapping, fail-safe preflight, operator dialogs, tape-out instrumentation/recovery, batch-family rules, and controlled acceptance.
-- [Container QR Physical Acceptance — 2026-09-01](Container_QR_Physical_Acceptance_2026-09-01.md) — controlled physical-print evidence for compact `CONT:<id>` payloads, QR Version 4 / 15% error correction, two-label Container output, and the Bluetooth-HID justification for keeping Container payloads short.
+- [Label Service v4 — Architecture and Acceptance Contract](Label_Service_v4_Architecture_and_Acceptance.md) — authoritative v4 design record for logical label families, physical templates, printer/media mapping, fail-safe preflight, operator dialogs, tape-out instrumentation/recovery, batch-family rules, and controlled acceptance. Payload sections are superseded where explicitly stated by the 2026-09-02 QR payload decision below.
+- [QR Payload and Zebra ADF Decision — 2026-09-02](QR_Payload_and_Zebra_ADF_Decision_2026-09-02.md) — current accepted payload contract: V4 Display and Container QR codes retain the exact v3 full scan URLs; Zebra ADF shortens those URLs to `DISP:` / `CONT:` during scanner HID transmission.
+- [Container QR Physical Acceptance — 2026-09-01](Container_QR_Physical_Acceptance_2026-09-01.md) — controlled physical-print evidence for QR Version 4 / 15% error correction and two-label Container output. Its earlier compact physical-payload direction is superseded by the 2026-09-02 QR payload decision.
 - [How Label Service Works](How_Label_Service_Works.md) — v3.x production architecture/background. Retain as the current-production baseline until v4 is accepted and deployed.
 - [Label Service TODO](TODO_Label_Service.md) — older engineering TODO record; review against the v4 contract before acting on stale items.
 
