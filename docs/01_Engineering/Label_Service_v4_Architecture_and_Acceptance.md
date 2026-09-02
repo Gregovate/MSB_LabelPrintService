@@ -249,15 +249,13 @@ objLine2    (two visual copies)
 
 The two halves are not separate records and do not receive different values. One Wiring record supplies one `objChannel`, one `objLine1`, and one `objLine2`; those same three values appear on both halves so the label remains readable after it is folded around the wire.
 
-The corrected LBX contains duplicate visual objects with the same three b-PAC names. CSV/database merge has been physically demonstrated to populate both halves. Direct b-PAC assignment through `GetObject(name).Text` still requires an export-only bitmap proof before this template is activated in runtime printing.
+The corrected LBX contains duplicate visual objects with the same three b-PAC names. CSV/database merge has been physically demonstrated to populate both halves. Direct b-PAC assignment through `GetObject(name).Text` was tested on 2026-09-02 with the export-only probe.
 
-The no-tape probe is `tests/printer_diagnostics/export_wiring_foldover_probe.py`. Run it on PRINT-SERVER after pulling the branch:
+The proof **failed**: the left half changed to `09 / FOLDOVER-PROBE-A / FOLDOVER-PROBE-B`, while the right half retained `11 / Santa's Station Sign / Twist 01`. One `GetObject(name)` assignment reaches only the first matching visual object.
 
-```powershell
-& "C:\Program Files\Python\python.exe" .\tests\printer_diagnostics\export_wiring_foldover_probe.py
-```
+The physical fold-over design and one-record/same-three-values contract remain correct, but the current duplicate-name LBX is not safe for V4 direct assignment. Before runtime activation, either give the second-side objects unique b-PAC names and assign the same three values to both name sets, or prove a supported enumeration method that updates every matching object. Then rerun the export-only probe and require both halves to match.
 
-It must export a BMP showing `09`, `FOLDOVER-PROBE-A`, and `FOLDOVER-PROBE-B` on both halves. It does not select a printer or call `StartPrint` / `PrintOut`.
+The probe is `tests/printer_diagnostics/export_wiring_foldover_probe.py`. It does not select a printer or call `SetPrinter`, `StartPrint`, or `PrintOut`. The failed bitmap is `tests/printer_diagnostics/evidence/wiring_foldover_direct_assignment_20260902_162008.bmp` and must be committed as acceptance evidence.
 
 For Wiring, `objChannel` is the physical controller output/channel and is visually dominant. `objLine1` and `objLine2` are the two installer-facing descriptive lines. The service must never split or rewrite `objChannel`; it must send the three governed values supplied by the Wiring request/snapshot contract.
 
@@ -403,7 +401,7 @@ Controlled observations already captured include:
 - no cassette / cover closed: width `0x00`, type `0x00`;
 - cover open: Error Information 2 includes `0x10`; media identity is not reported.
 
-Brother documentation identifies Error Information 1 bit `0x02` as End of media. The complete raw PT-P950NW and QL-820NWB packets, including invalid and untested cases, are preserved in [Brother SNMP Status Evidence](Brother_SNMP_Status_Evidence.md).
+Brother documentation identifies Error Information 1 bit `0x02` as End of media. The recovered packet proves the fully exhausted cassette state, not the earlier low-tape warning. The striped end-marker transition remains unidentified and must be captured during a controlled natural runout. The complete raw PT-P950NW and QL-820NWB packets, including invalid and untested cases, are preserved in [Brother SNMP Status Evidence](Brother_SNMP_Status_Evidence.md).
 
 No SNMP response/timeout/network error is treated as printer unavailable. There is no need to invent a powered-off status byte.
 
@@ -455,9 +453,9 @@ The production Scheduled Task must run in the logged-on interactive Windows sess
 
 ## Tape-Out During Active Printing
 
-Tape-out is not a preflight condition. It is a during-batch recovery condition.
+The fully exhausted cassette state is not a preflight condition when tape remains at batch start; it is a during-batch recovery condition. The earlier low-tape/end-marker warning may occur while printing and its Brother byte/code is not yet known.
 
-The service must instrument the print loop so a natural tape-out event produces usable evidence before any automatic recovery behavior is assumed.
+The service must instrument the print loop before the next natural runout so it captures the raw transition as the striped tape passes the sensor and continues through the final `error1=0x02` exhausted state. No automatic recovery behavior may be assumed from the final code alone.
 
 ### Required per-label evidence
 
@@ -470,8 +468,9 @@ Immediately around each physical `PrintOut()` attempt, log enough context to ide
 - selected label family;
 - selected one-line/two-line template;
 - expected media;
-- Brother status before/after when practical;
-- raw status bytes for exceptional states;
+- Brother status immediately before submission and repeatedly during the controlled end-of-cassette diagnostic window;
+- the complete raw 32-byte status value for every change, including currently unknown notification/status bytes;
+- precise timestamps that correlate raw status, b-PAC submission, and spooler observations;
 - `PrintOut()` result;
 - Container copy number where one source row prints more than one physical label.
 
@@ -479,7 +478,7 @@ For Wiring also log `objChannel`, `objLine1`, and `objLine2`.
 
 ### Tape-out dialog
 
-When End of media is detected during an active batch, v4 must stop blindly advancing and show a visible dialog such as:
+When the fully exhausted `error1=0x02` state is detected during an active batch, v4 must stop blindly advancing and show a visible dialog such as:
 
 ```text
 Tape cassette is empty.
@@ -621,7 +620,7 @@ NO manual DB cleanup
 
 ### Tape-out instrumentation
 
-Before production rollout, per-label logging must be present so the next natural tape-out can be correlated with the physical label reported by staff.
+Before production rollout, per-label and short-interval diagnostic logging must be present so the striped low-tape transition and final exhaustion can be correlated with the physical label reported by staff. The raw 32-byte status must be retained even when a changed byte is not decoded yet.
 
 Application-level boundary-label reprint remains unapproved until real evidence is obtained.
 
@@ -710,7 +709,7 @@ Required before V4 deployment:
 - production Controller permanent-ID request-to-print support after the exact Controller scan route exists;
 - production Location/rack Code 128 request-to-print support on the QL-820NWB;
 - visible foreground operator alerts;
-- active-print tape-out transition/spooler/boundary-label instrumentation and controlled recovery;
+- active-print striped low-tape transition plus final-exhaustion/spooler/boundary-label instrumentation and controlled recovery;
 - restart/resume and no-double-print acceptance;
 - final Display and Container regression acceptance;
 - installation as the interactive PRINT-SERVER autologin/autostart task while preserving V3.4 rollback.
