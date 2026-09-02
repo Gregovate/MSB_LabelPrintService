@@ -251,6 +251,14 @@ The two halves are not separate records and do not receive different values. One
 
 The corrected LBX contains duplicate visual objects with the same three b-PAC names. CSV/database merge has been physically demonstrated to populate both halves. Direct b-PAC assignment through `GetObject(name).Text` still requires an export-only bitmap proof before this template is activated in runtime printing.
 
+The no-tape probe is `tests/printer_diagnostics/export_wiring_foldover_probe.py`. Run it on PRINT-SERVER after pulling the branch:
+
+```powershell
+& "C:\Program Files\Python\python.exe" .\tests\printer_diagnostics\export_wiring_foldover_probe.py
+```
+
+It must export a BMP showing `09`, `FOLDOVER-PROBE-A`, and `FOLDOVER-PROBE-B` on both halves. It does not select a printer or call `StartPrint` / `PrintOut`.
+
 For Wiring, `objChannel` is the physical controller output/channel and is visually dominant. `objLine1` and `objLine2` are the two installer-facing descriptive lines. The service must never split or rewrite `objChannel`; it must send the three governed values supplied by the Wiring request/snapshot contract.
 
 Example render intent:
