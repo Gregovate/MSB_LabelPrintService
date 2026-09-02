@@ -82,7 +82,7 @@ QR_label_1_line_vert_36mm.lbx
 wiring_label_2_line_horz_12mm_double_sided.lbx
 ```
 
-The surviving Wiring LBX is one physical fold-over template. It prints the same `objChannel`, `objLine1`, and `objLine2` values on both halves of the label. The two obsolete single-sided Wiring templates were removed and must not remain in V4 configuration.
+The surviving Wiring LBX is one physical fold-over template. Its left-side objects are `objChannel`, `objLine1`, and `objLine2`; its right-side objects are `objChannel_right`, `objLine1_right`, and `objLine2_right`. LabelPrintService assigns the same three logical values to both name sets. The two obsolete single-sided Wiring templates were removed and must not remain in V4 configuration.
 
 Do not create unused template variants merely for symmetry. There is no accepted 24 mm vertical template and no accepted two-line 36 mm vertical template at this time.
 
@@ -242,20 +242,23 @@ objLine2
 ### Wiring fold-over template
 
 ```text
-objChannel  (two visual copies)
-objLine1    (two visual copies)
-objLine2    (two visual copies)
+Left half                 Right half
+objChannel                objChannel_right
+objLine1                  objLine1_right
+objLine2                  objLine2_right
 ```
 
 The two halves are not separate records and do not receive different values. One Wiring record supplies one `objChannel`, one `objLine1`, and one `objLine2`; those same three values appear on both halves so the label remains readable after it is folded around the wire.
 
-The corrected LBX contains duplicate visual objects with the same three b-PAC names. CSV/database merge has been physically demonstrated to populate both halves. Direct b-PAC assignment through `GetObject(name).Text` was tested on 2026-09-02 with the export-only probe.
+The original duplicate-name LBX was tested through direct b-PAC assignment on 2026-09-02.
 
 The proof **failed**: the left half changed to `09 / FOLDOVER-PROBE-A / FOLDOVER-PROBE-B`, while the right half retained `11 / Santa's Station Sign / Twist 01`. One `GetObject(name)` assignment reaches only the first matching visual object.
 
-The physical fold-over design and one-record/same-three-values contract remain correct, but the current duplicate-name LBX is not safe for V4 direct assignment. Before runtime activation, either give the second-side objects unique b-PAC names and assign the same three values to both name sets, or prove a supported enumeration method that updates every matching object. Then rerun the export-only probe and require both halves to match.
+The physical fold-over design and one-record/same-three-values contract remain correct. The LBX was then corrected with the unique `_right` names listed above. The updated test assigns the same logical values to all six objects. Physical acceptance requires one 12 mm Wiring label with both halves matching and the correct fold orientation.
 
-The probe is `tests/printer_diagnostics/export_wiring_foldover_probe.py`. It does not select a printer or call `SetPrinter`, `StartPrint`, or `PrintOut`. The failed bitmap is `tests/printer_diagnostics/evidence/wiring_foldover_direct_assignment_20260902_162008.bmp` and must be committed as acceptance evidence.
+The original failed bitmap is retained at `tests/printer_diagnostics/evidence/wiring_foldover_direct_assignment_20260902_162008.bmp`. `tests/printer_diagnostics/export_wiring_foldover_probe.py` now checks all six unique objects without printing. `tests/printer_diagnostics/print_wiring_foldover_test.py` is the controlled one-label physical test.
+
+Before the physical test calls `SetPrinter`, `StartPrint`, or `PrintOut`, it invokes the existing V4 family preflight for `WIRING_12MM_HORIZONTAL`. The PT-P950NW at `192.168.5.12` must report 12 mm laminated tape (`width=0x0C`, `type=0x01`), cover closed, and no Brother error. A failed gate prints nothing.
 
 For Wiring, `objChannel` is the physical controller output/channel and is visually dominant. `objLine1` and `objLine2` are the two installer-facing descriptive lines. The service must never split or rewrite `objChannel`; it must send the three governed values supplied by the Wiring request/snapshot contract.
 
@@ -409,7 +412,7 @@ No SNMP response/timeout/network error is treated as printer unavailable. There 
 
 The same Brother SNMP OID responds on the QL-820NWB. Raw packets are preserved in [Brother SNMP Status Evidence](Brother_SNMP_Status_Evidence.md).
 
-Evidence collected with DK-2251 includes repeatable READY, no-media, and cover-open responses. Only one QL media type was available, so comparative media identity and a natural QL end-of-roll remain untested.
+Evidence collected with DK-2251 includes repeatable READY (`width=0x3E`, `type=0x0A`), no-media, and cover-open responses. The required Location/Rack stock is the marketed 2.4-inch, 62 mm DK-2251 black/red-on-white continuous roll. Only that QL media type was available, so comparative media identity and a natural QL end-of-roll remain untested.
 
 Location/rack production printing is a required V4 deliverable. The accepted LBX uses:
 
