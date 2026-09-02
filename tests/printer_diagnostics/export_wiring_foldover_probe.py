@@ -19,6 +19,9 @@ PROBE_VALUES = {
     "objChannel": "09",
     "objLine1": "FOLDOVER-PROBE-A",
     "objLine2": "FOLDOVER-PROBE-B",
+    "objChannel_right": "09",
+    "objLine1_right": "FOLDOVER-PROBE-A",
+    "objLine2_right": "FOLDOVER-PROBE-B",
 }
 
 
