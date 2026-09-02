@@ -6,7 +6,7 @@
 | System | MSB Label Print Service / PRINT-SERVER |
 | Branch | `agent/runtime-preflight-hardening` |
 | Primary Issue | LabelPrintService #14 |
-| Last Updated | 2026-08-31 |
+| Last Updated | 2026-09-02 |
 | Production Baseline | `label_poll_service_v3.py` v3.4 remains rollback path until v4 is proven |
 
 ## Purpose
@@ -79,9 +79,10 @@ QR_label_2_line_horz_24mm.lbx
 QR_label_1_line_horz_36mm.lbx
 QR_label_2_line_horz_36mm.lbx
 QR_label_1_line_vert_36mm.lbx
-wiring_label_1_line_horz_12mm.lbx
-wiring_label_2_line_horz_12mm.lbx
+wiring_label_2_line_horz_12mm_double_sided.lbx
 ```
+
+The surviving Wiring LBX is one physical fold-over template. It prints the same `objChannel`, `objLine1`, and `objLine2` values on both halves of the label. The two obsolete single-sided Wiring templates were removed and must not remain in V4 configuration.
 
 Do not create unused template variants merely for symmetry. There is no accepted 24 mm vertical template and no accepted two-line 36 mm vertical template at this time.
 
@@ -93,8 +94,8 @@ The accepted catalog is:
 
 | ID | Code | Width | Orientation | Class | Current use |
 |---:|---|---:|---|---|---|
-| 1 | `QR_36MM_HORIZONTAL` | 36 mm | HORIZONTAL | `QR_IDENTITY` | Existing Displays; horizontal Containers; eligible Controllers |
-| 2 | `QR_24MM_HORIZONTAL` | 24 mm | HORIZONTAL | `QR_IDENTITY` | Selected Displays/Controllers when intentionally assigned |
+| 1 | `QR_36MM_HORIZONTAL` | 36 mm | HORIZONTAL | `QR_IDENTITY` | Existing Displays; horizontal Containers |
+| 2 | `QR_24MM_HORIZONTAL` | 24 mm | HORIZONTAL | `QR_IDENTITY` | Selected Displays; permanent Controller ID labels |
 | 3 | `QR_36MM_VERTICAL` | 36 mm | VERTICAL | `QR_IDENTITY` | Vertical Containers |
 | 4 | `WIRING_12MM_HORIZONTAL` | 12 mm | HORIZONTAL | `WIRING` | FieldWiring controller-output labels |
 
@@ -160,13 +161,13 @@ The old Container-specific `objContainerLabel` object is a v3 template dependenc
 
 Current Container quantity behavior remains two physical labels per selected Container unless separately changed and accepted.
 
-For v4, newly printed/replacement Container labels use the compact canonical machine payload `CONT:<container_id>`. This is intentionally isolated in `sql/container_snapshot_v4.sql`; the shared v3 `sql/container_snapshot.sql` remains full-URL for rollback compatibility.
+For v4, newly printed/replacement Container labels retain the exact V3 full URL: `https://db.sheboyganlights.org/scan/CONT/<container_id>`. This is implemented in `sql/container_snapshot_v4.sql`. Zebra ADF may shorten that URL to `CONT:<container_id>` plus carriage return during HID transmission; the physical QR remains phone-compatible.
 
 During the current polling transition, if both Display and Container requests are pending, v4 processes the selected Display workload first and leaves Container requests untouched for a later poll. This is a deterministic safety rule that avoids mixing 24 mm Display work with 36 mm Container work in one execution cycle.
 
 ## Display / Controller QR Rendering Contract
 
-Display and Controller identity labels use horizontal 24 mm or 36 mm physical families as assigned by the database.
+Display identity labels use their assigned horizontal 24 mm or 36 mm physical family. Permanent Controller ID labels use the 24 mm one-line QR template after the Controller scan route and V4 Controller polling path are implemented and accepted.
 
 Within a family, LabelPrintService chooses the one-line or two-line physical template based on the actual human-readable text.
 
@@ -238,43 +239,29 @@ objLine1
 objLine2
 ```
 
-### Wiring one-line template
+### Wiring fold-over template
 
 ```text
-objChannel
-objLine1
+objChannel  (two visual copies)
+objLine1    (two visual copies)
+objLine2    (two visual copies)
 ```
 
-### Wiring two-line template
+The two halves are not separate records and do not receive different values. One Wiring record supplies one `objChannel`, one `objLine1`, and one `objLine2`; those same three values appear on both halves so the label remains readable after it is folded around the wire.
+
+The corrected LBX contains duplicate visual objects with the same three b-PAC names. CSV/database merge has been physically demonstrated to populate both halves. Direct b-PAC assignment through `GetObject(name).Text` still requires an export-only bitmap proof before this template is activated in runtime printing.
+
+For Wiring, `objChannel` is the physical controller output/channel and is visually dominant. `objLine1` and `objLine2` are the two installer-facing descriptive lines. The service must never split or rewrite `objChannel`; it must send the three governed values supplied by the Wiring request/snapshot contract.
+
+Example render intent:
 
 ```text
-objChannel
-objLine1
-objLine2
+objChannel = 09
+objLine1   = Caroler
+objLine2   = Mouth Open 2
 ```
 
-For Wiring, `objChannel` is the physical controller output/channel number and is the visually dominant field. It is normally a large integer from `1` through `16`.
-
-`objLine1` / `objLine2` are the installer-facing descriptive wiring text. They contain only the useful descriptive connection metadata supplied by the structured FieldWiring system. Field plug identifiers such as `P1` are not printed.
-
-The raw LOR Channel Name is source evidence, not automatically print-ready text. It may contain Stage short codes and controller UID/address scaffolding used only to keep the preview organized. LabelPrintService must not print those authoring prefixes merely because they exist in the raw Channel Name, and it must not implement a fragile parser that guesses which prefixes to strip.
-
-For example, a source name such as:
-
-```text
-TC 7B-09 Caroler P1 Mouth Open 2
-```
-
-may resolve semantically to:
-
-```text
-objChannel = 9
-objLine1/objLine2 = Caroler / Mouth Open 2
-```
-
-The exact ordering and one-line/two-line split of the supplied descriptive metadata remains a rendering/test decision. The Stage code `TC` and controller UID `7B` are not required physical-label text.
-
-The service must never split or rewrite `objChannel`. Only the supplied descriptive metadata is eligible for safe splitting between `objLine1` and `objLine2`.
+Each value above is repeated unchanged on the second half of the fold-over label.
 
 ## Wiring Label Purpose
 
@@ -284,55 +271,29 @@ The visual goal is to improve field readability beyond handheld-printer labels b
 
 The channel number alone does not identify a particular controller. Specific controller identity, Stage, network, UID/address, universe, and other context remain available through the wiring system rather than being permanently encoded into every descriptive wiring line.
 
-Wiring request/snapshot implementation remains gated until FieldWiring exposes the structured channel/output and printable metadata fields unambiguously. v4 must not block Setup-critical Display/Container work on that future mapping.
+FieldWiring already exposes structured `physical_output`, `display_name`, and `channel_name` data in its read-only wiring package. It does not yet provide the lead/display label-selection and request workflow. That request contract, snapshot/finalization path, and no-double-print behavior remain in the FieldWiring workstream; the shared LabelPrintService remains the only Brother printing stack.
 
-## QR Payload Compatibility and Container-First Migration
+## QR Payload Compatibility
 
-Existing deployed Display and Container labels contain full scan URLs and remain supported indefinitely. There is no mass relabel requirement solely to change payload format.
-
-The scan platform accepts both full URLs and compact canonical payloads such as:
+The accepted physical QR payload for both permanent Display and Container identity labels is the exact V3 full scan URL:
 
 ```text
-DISP:323
-CONT:216
-LOC:<location_code>
+Display:   https://db.sheboyganlights.org/scan/DISP/<display_id>
+Container: https://db.sheboyganlights.org/scan/CONT/<container_id>
 ```
 
-The operational tradeoff is different by scanning device:
+Existing and newly printed labels therefore remain directly usable by phone cameras. Zebra Advanced Data Formatting owns scanner-side shortening for Bluetooth HID entry:
 
 ```text
-phone camera
-    full https://db.sheboyganlights.org/... QR
-    -> convenient direct browser opening
-
-Zebra Bluetooth HID scanner
-    full URL
-    -> slow because the scanner types every URL character
-
-Zebra Bluetooth HID scanner
-    CONT:216
-    -> much shorter/faster keyboard input
+https://db.sheboyganlights.org/scan/DISP/<id> -> DISP:<id> + carriage return
+https://db.sheboyganlights.org/scan/CONT/<id> -> CONT:<id> + carriage return
 ```
 
-### Accepted migration order
+Do not restore the superseded compact physical Container payload. The V4 snapshot SQL must freeze the full URL in the existing `qr_url` field.
 
-Containers migrate first because Container labels are expected to be the highest-volume Setup scanning workflow.
+Location/rack Code 128 labels use `LOC:<location_code>` because that is the accepted compact machine identity for that separate label class.
 
-For LabelPrintService v4:
-
-```text
-new/replacement Container QR payload
-    -> CONT:<container_id>
-
-new/replacement Display QR payload
-    -> keep full https://db.sheboyganlights.org/scan/DISP/<id> URL for now
-```
-
-Existing deployed Container full-URL labels continue to resolve normally. v3.4 rollback also retains its original full-URL Container snapshot behavior. Only the v4 Container snapshot path uses the compact payload.
-
-The database column/batch field remains named `qr_url` for backward-compatible schema reasons during this Setup-critical migration, but for v4 Container rows its value is the actual machine-readable payload and therefore may be `CONT:<id>` rather than a literal URL. Do not add a second schema merely to rename this field during the Setup-critical v4 work.
-
-Display compact-payload migration remains a separate later decision because full URLs are convenient when a phone camera is used directly.
+Permanent Controller labels are intended to use a full phone-compatible Controller scan URL in `objQr` and visible `CTRL:<controller_id>` text. No accepted `/scan/CTRL/<controller_id>` route exists yet, so permanent Controller labels must not be printed with an assumed dead URL. The Production Database workstream must implement and accept the exact route first.
 
 ## Printer Runtime Mapping
 
@@ -350,7 +311,7 @@ v4 configuration is printer-specific and family-specific.
 - Windows queue: `Brother QL-820NWB`
 - host/IP: `192.168.5.11`
 - template directory: `C:\MSB_LabelService\templates\ql_820nwb`
-- Location production printing is not part of current v4 Setup-critical acceptance.
+- Location/rack Code 128 printing is a required V4 deliverable; the governed request/batch/poller/finalizer and physical acceptance remain incomplete.
 
 The QL mapping must remain easy to enable later without redesigning the PT-P950NW code path.
 
@@ -434,17 +395,24 @@ Controlled observations already captured include:
 - no cassette / cover closed: width `0x00`, type `0x00`;
 - cover open: Error Information 2 includes `0x10`; media identity is not reported.
 
-Brother documentation identifies Error Information 1 bit `0x02` as End of media.
+Brother documentation identifies Error Information 1 bit `0x02` as End of media. The complete raw PT-P950NW and QL-820NWB packets, including invalid and untested cases, are preserved in [Brother SNMP Status Evidence](Brother_SNMP_Status_Evidence.md).
 
 No SNMP response/timeout/network error is treated as printer unavailable. There is no need to invent a powered-off status byte.
 
 ## QL-820NWB Status Evidence and Gate
 
-The same Brother SNMP OID responds on the QL-820NWB.
+The same Brother SNMP OID responds on the QL-820NWB. Raw packets are preserved in [Brother SNMP Status Evidence](Brother_SNMP_Status_Evidence.md).
 
-Evidence collected with DK-2251 includes repeatable READY, no-media, and cover-open responses. Only one QL media type was available, so comparative media identity interpretation and actual end-of-roll behavior remain unproven.
+Evidence collected with DK-2251 includes repeatable READY, no-media, and cover-open responses. Only one QL media type was available, so comparative media identity and a natural QL end-of-roll remain untested.
 
-Production Location printing remains gated until final Location label design, final scan payload, XR scanner field acceptance, final media selection, and QL media/status acceptance are complete.
+Location/rack production printing is a required V4 deliverable. The accepted LBX uses:
+
+```text
+objCode128 <- LOC:<location_code>
+objLine1   <- location_code
+```
+
+The remaining work is the governed database request and immutable batch/history contract, V4 polling/rendering/finalization, enabling the QL runtime configuration, controlled physical acceptance, and safe recovery behavior. The absence of a natural QL end-of-roll cartridge must be recorded as an explicit evidence gap rather than silently treated as passed.
 
 ## Operator-Correctable Preflight Dialogs
 
@@ -649,15 +617,16 @@ Before production rollout, per-label logging must be present so the next natural
 
 Application-level boundary-label reprint remains unapproved until real evidence is obtained.
 
-### Compact QR payload
+### Full-URL QR payload
 
-Container compact payload printing is enabled first in v4. Acceptance must prove at minimum:
+Acceptance must prove at minimum:
 
-- a newly printed/replacement Container QR encodes exactly `CONT:<container_id>`;
-- Zebra HID scanning reaches the same Container scan workflow as the existing full URL;
-- already-deployed full-URL Container labels continue to resolve;
-- v3.4 rollback still snapshots/prints the original full Container URL;
-- Display v4 QR payload remains the full URL until a separate Display migration is accepted.
+- a newly printed/replacement Display QR encodes exactly `https://db.sheboyganlights.org/scan/DISP/<display_id>`;
+- a newly printed/replacement Container QR encodes exactly `https://db.sheboyganlights.org/scan/CONT/<container_id>`;
+- phone-camera scanning opens the correct scan route;
+- Zebra ADF shortens the full URLs to `DISP:<id>` / `CONT:<id>` plus carriage return during HID transmission;
+- already-deployed full-URL labels continue to resolve;
+- V3.4 rollback retains its original full-URL behavior.
 
 ## v4 Full Preflight and Operator Retry/Cancel Gate
 
@@ -726,17 +695,25 @@ cassette, cover open, unavailable printer, unsafe queue, missing runtime
 file/path, Retry recovery, Cancel suppression, and zero PostgreSQL execution
 state change on every failed preflight.
 
-## Deferred / Future Work
+## Remaining Required Work and Separate Workstreams
 
-Not required to complete the immediate Setup-critical v4 repair unless acceptance proves otherwise:
+Required before V4 deployment:
 
-- production Location printing on QL-820NWB;
-- final QL media identity/end-of-roll decoding;
-- future Label Printing application;
-- full FieldWiring print-request UI and structured channel/printable-metadata source mapping;
-- Controller printing until Controller assignment/family workflow is ready;
-- application-level automatic tape-out boundary-label replay;
-- unrelated cleanup of duplicate historical DB constraints.
+- production Controller permanent-ID request-to-print support after the exact Controller scan route exists;
+- production Location/rack Code 128 request-to-print support on the QL-820NWB;
+- visible foreground operator alerts;
+- active-print tape-out transition/spooler/boundary-label instrumentation and controlled recovery;
+- restart/resume and no-double-print acceptance;
+- final Display and Container regression acceptance;
+- installation as the interactive PRINT-SERVER autologin/autostart task while preserving V3.4 rollback.
+
+Tracked separately but not implemented by inventing a second printer stack here:
+
+- FieldWiring lead/display label selection/request UI and its governed snapshot/finalization contract;
+- future general Label Printing application;
+- unrelated cleanup of duplicate historical database constraints.
+
+A natural QL end-of-roll remains an explicit hardware-evidence gap because only one non-empty DK-2251 roll was available. It must not be represented as a passed test.
 
 ## Repository Reconciliation Requirements
 
