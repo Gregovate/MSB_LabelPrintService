@@ -1,7 +1,8 @@
 /* ======================================================================
    Snapshot selected Containers into a v4 batch.
-   v4 machine payload: CONT:<container_id>.
-   Existing deployed full-URL labels remain supported by Scan.
+   QR payload remains the exact v3 full scan URL.
+   Zebra ADF may shorten the transmitted scan data for HID workflows,
+   but the physical QR payload itself remains backward-compatible.
    Parameters:
      %(batch_id)s
      %(container_ids)s
@@ -19,7 +20,7 @@ SELECT
     %(batch_id)s,
     c.container_id,
     c.container_type_id,
-    'CONT:' || c.container_id::text AS qr_url,
+    'https://db.sheboyganlights.org/scan/CONT/' || c.container_id AS qr_url,
     'C' || LPAD(c.container_id::text, 3, '0') AS container_label,
     CASE
         WHEN c.container_type_id = 1 THEN 'VERTICAL'
