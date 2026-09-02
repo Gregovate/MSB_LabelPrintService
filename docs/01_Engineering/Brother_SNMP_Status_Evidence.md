@@ -32,13 +32,14 @@ Target and reply: `192.168.5.12:161/UDP`
 | Physical condition | Width | Type | Error 1 | Error 2 | Result |
 |---|---:|---:|---:|---:|---|
 | 36 mm laminated, ready | `0x24` | `0x01` | `0x00` | `0x00` | Ready |
-| 36 mm laminated cassette, tape out | `0x24` | `0x01` | `0x02` | `0x00` | End of media |
+| 36 mm laminated cassette, fully exhausted | `0x24` | `0x01` | `0x02` | `0x00` | End of media |
 | No cassette, cover closed | `0x00` | `0x00` | `0x00` | `0x00` | No media is represented by zero media fields |
 | No cassette, cover open | `0x00` | `0x00` | `0x00` | `0x10` | Cover open |
 | 24 mm laminated, ready | `0x18` | `0x01` | `0x00` | `0x00` | Ready |
 | 24 mm cassette installed, cover open | `0x00` | `0x00` | `0x00` | `0x10` | Cover open suppresses cassette identity |
 | 12 mm laminated, ready | `0x0C` | `0x01` | `0x00` | `0x00` | Ready |
 | Physical 12 mm heat-shrink cartridge | `0x0C` | `0x03` | `0x00` | `0x00` | Printer reports type `0x03`, not expected `0x11` |
+| Low-tape striped end marker | — | — | — | — | Not captured; code/byte transition unknown |
 | 18 mm cassette | — | — | — | — | Not tested in the recovered conversation |
 
 ### 36 mm laminated, ready
@@ -53,7 +54,7 @@ Status value:
 
 Observed: 36 mm laminated white tape with black ribbon; no errors.
 
-### 36 mm laminated cassette, tape out
+### 36 mm laminated cassette, fully exhausted
 
 ```text
 SNMP packet:
@@ -63,7 +64,13 @@ Status value:
 80 20 42 30 70 30 04 00 02 00 24 01 00 00 00 00 00 00 02 00 00 00 00 00 01 08 00 00 00 00 00 00
 ```
 
-Observed: cassette identity remains present; Error Information 1 is `0x02` (end of media), and status type is `0x02` (error occurred). This is the known P950NW tape-out signature.
+Observed: cassette identity remains present; Error Information 1 is `0x02` (end of media), and status type is `0x02` (error occurred). This is the known **fully exhausted cassette** signature. It is not evidence of the earlier low-tape warning produced when the printer reads the striped end-marker tape.
+
+### Missing low-tape/end-marker warning
+
+Near the end of a cassette, striped tape passes through the printer before the usable tape is fully exhausted. The printer can read those stripes, but the corresponding Brother status byte/code has not been identified in the existing captures.
+
+The controlled natural-runout test must begin logging before the striped section reaches the sensor and continue through the final `0x02` end-of-media state. Each sample must retain the complete raw 32-byte value and be correlated with precise timestamp, batch/item identity, b-PAC result, and Windows spooler state. Raw changes must be preserved even when the current decoder gives them no name.
 
 ### No cassette, cover closed
 
@@ -197,11 +204,12 @@ Two operator-labeled P950 tests (cover open and empty 36 mm cassette) accidental
 
 1. Evaluate cover-open before interpreting media identity.
 2. Detect no cassette/roll from zero media fields; do not depend only on error bits.
-3. Detect P950 tape-out from Error Information 1 `0x02` while retaining cassette width/type.
-4. Validate required width and tested media type before creating a database execution batch.
-5. Log the complete raw 32-byte status value for each failure and state transition.
-6. During active printing, capture status around the boundary label so tape-out recovery never guesses whether a physical label printed.
-7. The operator dialog must demonstrably become visible and gain attention. A `PREFLIGHT_DIALOG_OPEN` log entry proves only that code attempted to create it.
-8. Controlled acceptance must cover cassette replacement, Retry/Cancel, restart/resume, and no-double-print behavior before V4 deployment.
+3. Detect the fully exhausted P950 cassette from Error Information 1 `0x02` while retaining cassette width/type.
+4. Do not conflate `0x02` with the still-unidentified low-tape striped end-marker warning.
+5. Validate required width and tested media type before creating a database execution batch.
+6. During the controlled natural-runout test, capture the complete raw 32-byte status repeatedly before the stripes, throughout the striped section, and through full exhaustion.
+7. Correlate every status transition with timestamp, batch/item identity, b-PAC return, and Windows spooler state so recovery never guesses whether the boundary label physically printed.
+8. The operator dialog must demonstrably become visible and gain attention. A `PREFLIGHT_DIALOG_OPEN` log entry proves only that code attempted to create it.
+9. Controlled acceptance must cover cassette replacement, Retry/Cancel, restart/resume, and no-double-print behavior before V4 deployment.
 
 During later V4 acceptance, a pending 36 mm Container with 24 mm laminated tape returned the same proven 24 mm ready status value. Preflight correctly blocked printing. The operator initially reported no visible dialog and later found it buried behind six windows, confirming the unresolved focus/attention defect.
