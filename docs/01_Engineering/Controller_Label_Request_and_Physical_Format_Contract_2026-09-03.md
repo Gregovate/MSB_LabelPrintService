@@ -4,10 +4,10 @@
 |---|---|
 | Document Type | Cross-repository integration contract |
 | System | MSB Production Database / Controller Inventory / LabelPrintService |
-| Status | CURRENT — upstream request and scan contracts deployed; physical consumer pending |
+| Status | DEPLOYMENT CANDIDATE — database installed; gated V4 consumer awaiting physical acceptance |
 | Effective Date | 2026-09-03 |
-| Controlling Issue | [LabelPrintService #14](https://github.com/Gregovate/MSB_LabelPrintService/issues/14) |
-| Pull Request | [LabelPrintService #15](https://github.com/Gregovate/MSB_LabelPrintService/pull/15) |
+| Controlling Issue | [LabelPrintService #18](https://github.com/Gregovate/MSB_LabelPrintService/issues/18) |
+| Pull Request | [LabelPrintService #22](https://github.com/Gregovate/MSB_LabelPrintService/pull/22) |
 
 ## Purpose
 
@@ -88,24 +88,51 @@ The full URL is the permanent physical QR payload. Zebra Advanced Data Formattin
 
 The existing V4 family preflight must reject missing, wrong-width, wrong-type, cover-open, printer-unavailable, or unsafe-queue states before an execution batch is created.
 
-## LabelPrintService Consumer — Not Yet Implemented
+## LabelPrintService Consumer Candidate
 
-The upstream request and scan route are complete. V4 still needs:
+The draft V4 branch now contains the Controller consumer:
 
-1. deterministic polling of pending `ref.controller.print_label` rows;
-2. 24 mm family selection and full preflight;
-3. immutable Controller batch header/item snapshot;
-4. b-PAC rendering through the approved object contract;
-5. one-label-at-a-time execution evidence;
-6. targeted success finalization that clears only the snapshotted requests actually printed;
-7. restart, failure, and no-double-print behavior;
-8. controlled physical acceptance from the deployed Scheduled Task context.
+- deterministic polling of pending `ref.controller.print_label` rows;
+- validation that every pending Controller resolves to `QR_24MM_HORIZONTAL`;
+- 24 mm laminated-media and one-line-template preflight;
+- workload-signature verification before and after preflight;
+- row locking and immutable Controller batch/item snapshot;
+- direct b-PAC assignment to `objLine1` and `objQr`;
+- one physical label per snapshotted Controller;
+- targeted finalization that clears only the Controllers in the completed batch;
+- cached print-count/time/requestor update;
+- failed-batch persistence and repeat-print blocking.
 
-A failed preflight must create no execution batch and leave the request pending.
+Tracked SQL:
+
+```text
+sql/controller_snapshot_v4.sql
+sql/controller_export.sql
+sql/controller_finalized.sql
+```
+
+The consumer is guarded by `controller_polling_enabled`, which defaults to
+`false`. The current PRINT-SERVER local configuration does not enable it. A
+failed preflight creates no execution batch and leaves the request pending.
+
+Production Database migration
+`Controllers/Database/025_create_controller_label_print_batches.sql` was
+merged through Production Database PR #120 at commit `f6683c5` and installed
+on production PostgreSQL on 2026-09-03. Post-installation verification proved
+all 177 Controllers use the 24 mm family, the new batch tables are empty, the
+Controller audit trigger remains enabled, and the required `printservice`
+table, column, and sequence permissions pass.
+
+The Controller consumer is not production-complete until its code is installed,
+the feature is deliberately enabled for a controlled request, and
+request-to-physical-label plus restart/no-double-print behavior are accepted.
 
 ## Pending-Request Safety Check
 
-A previously documented accidental request for Controller `1001` may still be pending. Before the new consumer is enabled, inspect and deliberately clear or intentionally test that request. Enabling the poller must not unexpectedly print an old request.
+The production preflight immediately before migration 025 reported zero pending
+Controller requests; Controller `1001` was not pending. Pending requests must
+still be checked immediately before every controlled activation so enabling the
+poller cannot unexpectedly print an old request.
 
 ## Cross-Repository Ownership
 
