@@ -27,6 +27,31 @@ If the failed batch is retired before the underlying cause is corrected, the sti
 
 If physical printing may have started, a Windows print job remains queued, or any batch item has `printed_flag = true` / non-null `printed_at`, stop and reconcile the physical labels before retrying.
 
+### Physical label printed but the batch says FAILED
+
+Do not apply the failed-before-print deletion procedure when the physical
+label exists. This occurred with the first production Controller label on
+2026-09-03: b-PAC returned successful `PrintOut`, `EndPrint`, and `Close`
+results, but the short Windows job cleared before the old spooler watcher
+started. Controller batch 1 was therefore falsely marked `FAILED` even though
+`CTRL:1031` physically printed.
+
+For this condition:
+
+1. stop the service;
+2. prove the Windows queue is empty;
+3. inspect the exact failed header, frozen items, current request flags, and
+   cached print history;
+4. reconcile only the physically confirmed items as printed;
+5. clear only their source requests and update their cached history once;
+6. mark the exact batch completed while retaining both the original failure
+   and recovery explanation;
+7. verify zero pending requests and zero failed batches before restart.
+
+Do not copy the Controller 1031 recovery SQL blindly. Every recovery must be
+guarded by the actual batch/item IDs and inspected state so it cannot increment
+history twice or clear an unrelated request.
+
 ## 1. Check Whether the Label Service Is Running
 
 On `PRINT-SERVER` PowerShell:
