@@ -6,8 +6,8 @@
 | System | MSB Label Print Service / PRINT-SERVER |
 | Branch | `agent/runtime-preflight-hardening` |
 | Primary Issue | LabelPrintService #14 |
-| Last Updated | 2026-09-02 |
-| Production Baseline | `label_poll_service_v3.py` v3.4 remains rollback path until v4 is proven |
+| Last Updated | 2026-09-03 |
+| Production Baseline | V4 is the controlled Scheduled Task worker; `label_poll_service_v3.py` v3.4 remains the preserved rollback path |
 
 ## Purpose
 
@@ -48,18 +48,19 @@ The Production Database must not store PRINT-SERVER-local Windows queue names or
 
 FieldWiring may request plug/output labels from approved wiring data. It must not create a second Brother printer stack if LabelPrintService can render the requested label class.
 
-## Production / Development Separation
+## Controlled Production / Rollback Separation
 
-Until v4 acceptance is complete:
+As of 2026-09-03:
 
-- `label_poll_service_v3.py` v3.4 is the known rollback implementation;
-- `config.local.ini` remains the v3 production configuration;
-- `label_poll_service_v4.py` is development only;
-- `config.v4.local.ini` is local-only and Git-ignored;
-- the Scheduled Task remains stopped during controlled development/testing unless explicitly started for acceptance;
-- obsolete root-level/legacy `.lbx` files remain in place until v4 is proven.
+- `label_poll_service_v4.py` is the active controlled `MSB Label Service` Scheduled Task worker for existing Display and Container polling;
+- the task runs as `Print Service` with `LogonType: Password` and `RunLevel: Highest`;
+- `config.v4.local.ini` is the active local V4 configuration and remains Git-ignored;
+- `label_poll_service_v3.py` v3.4 and `config.local.ini` remain the known rollback implementation/configuration;
+- the exported V3 task definition is preserved at `state/MSB_Label_Service_v3_task_20260902.xml`;
+- V3 and V4 must never run concurrently;
+- obsolete root-level/legacy `.lbx` files remain in place until V4 acceptance and rollback verification are complete.
 
-The v4 implementation must not require destructive removal of the v3 rollback path before acceptance.
+The controlled cutover proves Scheduled Task startup and idle polling. Physical Display/Container printing from the task context, unattended reboot recovery, and the rollback exercise remain acceptance items. See [V4 Controlled Production Deployment and Queue Plan](V4_Controlled_Deployment_and_Queue_Plan_2026-09-03.md).
 
 ## Physical Template Organization
 
@@ -167,7 +168,7 @@ During the current polling transition, if both Display and Container requests ar
 
 ## Display / Controller QR Rendering Contract
 
-Display identity labels use their assigned horizontal 24 mm or 36 mm physical family. Permanent Controller ID labels use the 24 mm one-line QR template after the Controller scan route and V4 Controller polling path are implemented and accepted.
+Display identity labels use their assigned horizontal 24 mm or 36 mm physical family. Permanent Controller ID labels use the 24 mm one-line QR template. The Controller request command and scan route are deployed; the remaining blocker is the missing V4 Controller polling/snapshot/render/finalization path.
 
 Within a family, LabelPrintService chooses the one-line or two-line physical template based on the actual human-readable text.
 
@@ -254,7 +255,7 @@ The original duplicate-name LBX was tested through direct b-PAC assignment on 20
 
 The proof **failed**: the left half changed to `09 / FOLDOVER-PROBE-A / FOLDOVER-PROBE-B`, while the right half retained `11 / Santa's Station Sign / Twist 01`. One `GetObject(name)` assignment reaches only the first matching visual object.
 
-The physical fold-over design and one-record/same-three-values contract remain correct. The LBX was then corrected with the unique `_right` names listed above. The updated test assigns the same logical values to all six objects. Physical acceptance requires one 12 mm Wiring label with both halves matching and the correct fold orientation.
+The physical fold-over design and one-record/same-three-values contract remain correct. The LBX was corrected with the unique `_right` names listed above. The physical test then passed with `08 / UncleLouis Standing / Pants Master Prop`: the PT-P950NW reported 12 mm laminated tape, all six objects matched, exactly one label printed, and the corrected fold area had no center overlap. The folded Wiring physical format and direct b-PAC print path are approved.
 
 The original failed bitmap is retained at `tests/printer_diagnostics/evidence/wiring_foldover_direct_assignment_20260902_162008.bmp`. `tests/printer_diagnostics/export_wiring_foldover_probe.py` now checks all six unique objects without printing. `tests/printer_diagnostics/print_wiring_foldover_test.py` is the controlled one-label physical test. Both probes read `templates/pt_p950nw/csv/wiring_label_12mm_real_fieldlead_test.csv`; their default row is `08 / UncleLouis Standing / Pants Master Prop`, derived from the longest recovered current production FieldWiring `channel_name`. The source query and complete 50-row sizing result are preserved in [12 mm Wiring Field-Data Evidence](Wiring_12mm_Field_Data_Evidence.md). Invented placeholder strings are not acceptance fixtures.
 
@@ -302,7 +303,7 @@ Do not restore the superseded compact physical Container payload. The V4 snapsho
 
 Location/rack Code 128 labels use `LOC:<location_code>` because that is the accepted compact machine identity for that separate label class.
 
-Permanent Controller labels are intended to use a full phone-compatible Controller scan URL in `objQr` and visible `CTRL:<controller_id>` text. No accepted `/scan/CTRL/<controller_id>` route exists yet, so permanent Controller labels must not be printed with an assumed dead URL. The Production Database workstream must implement and accept the exact route first.
+Permanent Controller labels use the deployed full phone-compatible payload `https://db.sheboyganlights.org/scan/CTRL/<controller_id>` in `objQr` and visible `CTRL:<controller_id>` text in `objLine1`. The route and compact `CTRL:<controller_id>` form are accepted and converge on Controller Inventory. The governed request command is also deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). V4 physical Controller consumption remains unimplemented.
 
 ## Printer Runtime Mapping
 
@@ -452,7 +453,7 @@ Expected behavior:
 
 Correctable dialog classes include at minimum wrong media width/type, no media, cover open, unavailable printer when retry is reasonable, and unsafe queue/intervention states.
 
-The production Scheduled Task must run in the logged-on interactive Windows session so dialogs are visible. PRINT-SERVER autologin is enabled, but task configuration must still be verified during acceptance.
+The production worker runs as a headless Scheduled Task with `LogonType: Password`; it must not depend on message boxes being visible. Operator state and Retry/Hold actions belong in a separate interactive dashboard started at Print Service logon. Closing that dashboard must not stop the worker.
 
 ## Tape-Out During Active Printing
 
@@ -560,14 +561,15 @@ The design must leave reusable seams for a future Label Printing UI without repl
 
 ## Controlled Acceptance Requirements
 
-Before v4 replaces v3.4, prove at minimum:
+During controlled V4 production use and before PR #15 is merged, prove at minimum:
 
 ### Configuration / rollback
 
-- v3 files/config remain intact as rollback;
-- v4 reads only `config.v4.local.ini` during development;
-- secret v4 local config is Git-ignored;
-- Scheduled Task remains controlled and is updated only after acceptance.
+- V3 files/config and the exported V3 task definition remain intact as rollback;
+- V4 reads only `config.v4.local.ini`;
+- secret V4 local config is Git-ignored;
+- the Scheduled Task points to V4 and never runs V3 concurrently;
+- one controlled rollback exercise and unattended restart are documented.
 
 ### Display 36 mm
 
@@ -707,15 +709,15 @@ state change on every failed preflight.
 
 ## Remaining Required Work and Separate Workstreams
 
-Required before V4 deployment:
+Required before PR #15 merge:
 
-- production Controller permanent-ID request-to-print support after the exact Controller scan route exists;
+- production Controller permanent-ID consumer using the deployed request command and CTRL scan route;
 - production Location/rack Code 128 request-to-print support on the QL-820NWB;
 - visible foreground operator alerts;
 - active-print striped low-tape transition plus final-exhaustion/spooler/boundary-label instrumentation and controlled recovery;
 - restart/resume and no-double-print acceptance;
 - final Display and Container regression acceptance;
-- installation as the interactive PRINT-SERVER autologin/autostart task while preserving V3.4 rollback.
+- scheduled-task physical-print, unattended reboot, and V3.4 rollback acceptance.
 
 Tracked separately but not implemented by inventing a second printer stack here:
 
