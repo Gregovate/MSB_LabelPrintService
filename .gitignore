@@ -9,7 +9,8 @@ logs/
 # Runtime state
 state/
 
-# CSV working files (optional — keep if generated)
+# Runtime CSV exports
+csv/*.csv
 csv/printed/
 
 # Python
