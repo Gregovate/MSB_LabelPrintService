@@ -4,10 +4,10 @@
 |---|---|
 | Document Type | Cross-repository integration contract |
 | System | MSB Production Database / Controller Inventory / LabelPrintService |
-| Status | IN DEVELOPMENT — gated V4 consumer implemented; database migration and physical acceptance pending |
+| Status | DEPLOYMENT CANDIDATE — database installed; gated V4 consumer awaiting physical acceptance |
 | Effective Date | 2026-09-03 |
-| Controlling Issue | [LabelPrintService #14](https://github.com/Gregovate/MSB_LabelPrintService/issues/14) |
-| Pull Request | [LabelPrintService #15](https://github.com/Gregovate/MSB_LabelPrintService/pull/15) |
+| Controlling Issue | [LabelPrintService #18](https://github.com/Gregovate/MSB_LabelPrintService/issues/18) |
+| Pull Request | [LabelPrintService #22](https://github.com/Gregovate/MSB_LabelPrintService/pull/22) |
 
 ## Purpose
 
@@ -115,20 +115,24 @@ The consumer is guarded by `controller_polling_enabled`, which defaults to
 `false`. The current PRINT-SERVER local configuration does not enable it. A
 failed preflight creates no execution batch and leaves the request pending.
 
-The Production Database candidate migration is
-`Controllers/Database/025_create_controller_label_print_batches.sql` on branch
-`agent/controller-label-print-batches` in
-`Gregovate/MSB-Production-Database-Project`. It creates the required
-`ops.controller_label_batch*` schema, assigns the 24 mm family/default, and
-grants bounded `printservice` access.
+Production Database migration
+`Controllers/Database/025_create_controller_label_print_batches.sql` was
+merged through Production Database PR #120 at commit `f6683c5` and installed
+on production PostgreSQL on 2026-09-03. Post-installation verification proved
+all 177 Controllers use the 24 mm family, the new batch tables are empty, the
+Controller audit trigger remains enabled, and the required `printservice`
+table, column, and sequence permissions pass.
 
-The candidate is not production-complete until the migration is installed, the
-feature is deliberately enabled, and request-to-physical-label plus
-restart/no-double-print behavior are accepted.
+The Controller consumer is not production-complete until its code is installed,
+the feature is deliberately enabled for a controlled request, and
+request-to-physical-label plus restart/no-double-print behavior are accepted.
 
 ## Pending-Request Safety Check
 
-A previously documented accidental request for Controller `1001` may still be pending. Before the new consumer is enabled, inspect and deliberately clear or intentionally test that request. Enabling the poller must not unexpectedly print an old request.
+The production preflight immediately before migration 025 reported zero pending
+Controller requests; Controller `1001` was not pending. Pending requests must
+still be checked immediately before every controlled activation so enabling the
+poller cannot unexpectedly print an old request.
 
 ## Cross-Repository Ownership
 

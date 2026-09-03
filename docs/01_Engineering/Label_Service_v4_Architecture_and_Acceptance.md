@@ -2,10 +2,11 @@
 
 | Document Control | Value |
 |---|---|
-| Status | IN DEVELOPMENT — accepted engineering contract; implementation/acceptance incomplete |
+| Status | CURRENT — V4 production baseline deployed; follow-up capabilities remain separately gated |
 | System | MSB Label Print Service / PRINT-SERVER |
-| Branch | `agent/runtime-preflight-hardening` |
-| Primary Issue | LabelPrintService #14 |
+| Branch | `main` plus scoped follow-up branches |
+| Baseline Issue | LabelPrintService #14 — closed after V4 deployment/merge |
+| Active Controller Issue | LabelPrintService #18 |
 | Last Updated | 2026-09-03 |
 | Production Baseline | V4 is the controlled Scheduled Task worker; `label_poll_service_v3.py` v3.4 remains the preserved rollback path |
 
@@ -100,11 +101,12 @@ The accepted catalog is:
 | 3 | `QR_36MM_VERTICAL` | 36 mm | VERTICAL | `QR_IDENTITY` | Vertical Containers |
 | 4 | `WIRING_12MM_HORIZONTAL` | 12 mm | HORIZONTAL | `WIRING` | FieldWiring controller-output labels |
 
-### Current live assignments at 2026-08-31
+### Current live assignments at 2026-09-03
 
 - all 1,056 existing `ref.display` rows are assigned `label_template_id = 1`;
 - no known Display has yet been intentionally changed to the 24 mm family;
-- all 177 current `ref.controller` rows have `label_template_id IS NULL` pending explicit assignment;
+- all 177 current `ref.controller` rows are assigned `label_template_id = 2`
+  (`QR_24MM_HORIZONTAL`) by deployed Production Database migration 025;
 - Containers do not currently FK to `ref.label_template`; existing Container orientation logic remains authoritative for horizontal vs vertical selection.
 
 ## `ref.label_template` Database Contract
@@ -168,7 +170,7 @@ During the current polling transition, if both Display and Container requests ar
 
 ## Display / Controller QR Rendering Contract
 
-Display identity labels use their assigned horizontal 24 mm or 36 mm physical family. Permanent Controller ID labels use the 24 mm one-line QR template. The Controller request command and scan route are deployed. The V4 Controller polling/snapshot/render/finalization candidate is implemented behind a feature flag that defaults to off; its database migration and controlled acceptance remain blockers to activation.
+Display identity labels use their assigned horizontal 24 mm or 36 mm physical family. Permanent Controller ID labels use the 24 mm one-line QR template. The Controller request command, scan route, and Production Database batch migration are deployed. The V4 Controller polling/snapshot/render/finalization candidate is implemented behind a feature flag that defaults to off; controlled consumer deployment and physical acceptance remain blockers to activation.
 
 Within a family, LabelPrintService chooses the one-line or two-line physical template based on the actual human-readable text.
 
@@ -303,7 +305,7 @@ Do not restore the superseded compact physical Container payload. The V4 snapsho
 
 Location/rack Code 128 labels use `LOC:<location_code>` because that is the accepted compact machine identity for that separate label class.
 
-Permanent Controller labels use the deployed full phone-compatible payload `https://db.sheboyganlights.org/scan/CTRL/<controller_id>` in `objQr` and visible `CTRL:<controller_id>` text in `objLine1`. The route and compact `CTRL:<controller_id>` form are accepted and converge on Controller Inventory. The governed request command is also deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). The V4 consumer is now a disabled code candidate and must not be described as production-operational until its database migration and physical acceptance pass.
+Permanent Controller labels use the deployed full phone-compatible payload `https://db.sheboyganlights.org/scan/CTRL/<controller_id>` in `objQr` and visible `CTRL:<controller_id>` text in `objLine1`. The route and compact `CTRL:<controller_id>` form are accepted and converge on Controller Inventory. The governed request command and database batch schema are deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). The V4 consumer is a disabled code candidate and must not be described as production-operational until controlled physical and restart/no-double-print acceptance pass.
 
 ## Printer Runtime Mapping
 
@@ -561,7 +563,7 @@ The design must leave reusable seams for a future Label Printing UI without repl
 
 ## Controlled Acceptance Requirements
 
-During controlled V4 production use and before PR #15 is merged, prove at minimum:
+During controlled V4 production use, prove the remaining applicable cases at minimum:
 
 ### Configuration / rollback
 
@@ -709,7 +711,7 @@ state change on every failed preflight.
 
 ## Remaining Required Work and Separate Workstreams
 
-Required before PR #15 merge:
+Remaining separately tracked work after the V4 baseline merge:
 
 - production Controller permanent-ID consumer using the deployed request command and CTRL scan route;
 - production Location/rack Code 128 request-to-print support on the QL-820NWB;
@@ -734,5 +736,5 @@ Before v4 is considered complete:
 - all manually applied Production Database schema changes from this work must exist as controlled repo SQL/migration/documentation in `MSB-Production-Database-Project`;
 - `config.v4.example.ini`, v4 code, template mappings, and operational docs must agree;
 - obsolete asset-specific template references must be removed only after controlled acceptance;
-- issue #14 and draft PR #15 must point to repository evidence, not substitute for it;
-- PR #15 remains draft until actual code + controlled evidence are complete.
+- closed issue #14 and merged PR #15 preserve the V4 baseline evidence;
+- each follow-up capability must use its own issue/PR and repository evidence.

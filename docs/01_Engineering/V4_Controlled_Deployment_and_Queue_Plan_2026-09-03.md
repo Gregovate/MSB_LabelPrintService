@@ -6,14 +6,14 @@
 | System | MSB Label Print Service / PRINT-SERVER |
 | Status | CURRENT — controlled V4 production use |
 | Effective Date | 2026-09-03 |
-| Controlling Issue | [#14](https://github.com/Gregovate/MSB_LabelPrintService/issues/14) |
-| Pull Request | [#15](https://github.com/Gregovate/MSB_LabelPrintService/pull/15) |
+| Baseline Issue | [#14](https://github.com/Gregovate/MSB_LabelPrintService/issues/14) — closed |
+| Baseline Pull Request | [#15](https://github.com/Gregovate/MSB_LabelPrintService/pull/15) — merged |
 
 ## Deployment Decision
 
 V4 is installed as the production `MSB Label Service` Scheduled Task worker before the Controller, Location, and Wiring polling paths are added.
 
-The purpose is to place the already-working Display and Container workload on V4's stronger media preflight and batch-safety behavior while development continues. PR #15 remains draft and V3.4 remains the rollback version.
+The purpose is to place the already-working Display and Container workload on V4's stronger media preflight and batch-safety behavior while development continues. PR #15 is merged and V3.4 remains the rollback version.
 
 V3 and V4 must never run concurrently.
 
@@ -124,11 +124,11 @@ An unresolved/recovery-required batch remains only the safety fallback for an un
 |---|---|---|
 | Display | `ref.display.print_label` | V4 implemented |
 | Container | `ref.container.print_label` | V4 implemented |
-| Controller | `ref.request_controller_label(p_email, p_controller_id)` sets `ref.controller.print_label` | governed request/route deployed; gated V4 consumer implemented but disabled pending DB migration and acceptance |
+| Controller | `ref.request_controller_label(p_email, p_controller_id)` sets `ref.controller.print_label` | request/route and database batch schema deployed; gated V4 consumer disabled pending physical acceptance |
 | Location | governed request on `ref.storage_location` | request field/command and V4 consumer missing |
 | Wiring | purpose-built operational request queue | physical format approved; request workflow and V4 consumer missing |
 
-The Controller request and scan contracts are authoritative and deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). The draft V4 branch now implements the Controller poll/snapshot/render/finalization path behind a feature flag that defaults to off. Production activation still requires the Controller batch migration, pending-request review, and controlled physical/restart/no-double-print acceptance.
+The Controller request, scan, and database batch contracts are authoritative and deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). PR #22 implements the Controller poll/snapshot/render/finalization path behind a feature flag that defaults to off. Production activation still requires consumer installation, an immediate pending-request check, and controlled physical/restart/no-double-print acceptance.
 
 Location and Wiring still require governed request contracts as well as their service consumers. The 12 mm fold-over Wiring physical format and direct b-PAC print path are approved; this approval does not create the missing request/polling pipeline.
 
@@ -136,8 +136,7 @@ The FieldWiring application owns creating Wiring requests. LabelPrintService own
 
 ## Remaining Controlled Acceptance
 
-- one Display physical print from the V4 Scheduled Task;
-- one Container physical print from the V4 Scheduled Task;
+- continued Display and Container production regression monitoring;
 - V3.4 rollback exercise;
 - unattended reboot and V4 restart verification;
 - Controller request-to-print pipeline;
@@ -148,4 +147,6 @@ The FieldWiring application owns creating Wiring requests. LabelPrintService own
 - safe stop-before-next-label behavior if a warning signature is found;
 - Display/Container regressions after shared scheduler changes.
 
-Do not merge PR #15 until the controlling acceptance work is complete.
+PR #15 established the merged V4 Display/Container production baseline. Every
+remaining capability is delivered and accepted through its own scoped issue and
+pull request.
