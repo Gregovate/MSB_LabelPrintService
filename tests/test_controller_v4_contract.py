@@ -34,7 +34,7 @@ class ControllerV4ContractTests(unittest.TestCase):
             ):
                 service_versions.append(ast.literal_eval(node.value))
 
-        self.assertEqual(service_versions, ["4.1.0-rc1"])
+        self.assertEqual(service_versions, ["4.1.0-rc2"])
 
     def test_service_source_parses_and_defines_controller_pipeline(self) -> None:
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
@@ -53,6 +53,41 @@ class ControllerV4ContractTests(unittest.TestCase):
             "mark_controller_batch_failed",
             "get_failed_controller_batch_id",
         }.issubset(function_names))
+
+    def test_every_renderer_starts_spooler_observation_before_start_print(self) -> None:
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        renderers = {
+            "print_display_rows_with_template",
+            "print_container_batch",
+            "print_controller_batch",
+        }
+
+        functions = {
+            node.name: ast.get_source_segment(source, node) or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name in renderers
+        }
+
+        self.assertEqual(set(functions), renderers)
+        for name, function_source in functions.items():
+            with self.subTest(renderer=name):
+                observer_start = function_source.index(
+                    "spooler_observer.start()"
+                )
+                bpac_start = function_source.index(
+                    'doc.StartPrint("", PRINT_FLAGS)'
+                )
+                completion_wait = function_source.index(
+                    "spooler_observer.wait_for_completion()"
+                )
+                observer_stop = function_source.index(
+                    "spooler_observer.stop()"
+                )
+
+                self.assertLess(observer_start, bpac_start)
+                self.assertLess(bpac_start, completion_wait)
+                self.assertLess(completion_wait, observer_stop)
 
     def test_example_config_keeps_controller_polling_off_by_default(self) -> None:
         config = configparser.ConfigParser()
