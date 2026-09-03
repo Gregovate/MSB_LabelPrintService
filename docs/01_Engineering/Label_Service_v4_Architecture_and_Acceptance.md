@@ -168,7 +168,7 @@ During the current polling transition, if both Display and Container requests ar
 
 ## Display / Controller QR Rendering Contract
 
-Display identity labels use their assigned horizontal 24 mm or 36 mm physical family. Permanent Controller ID labels use the 24 mm one-line QR template. The Controller request command and scan route are deployed; the remaining blocker is the missing V4 Controller polling/snapshot/render/finalization path.
+Display identity labels use their assigned horizontal 24 mm or 36 mm physical family. Permanent Controller ID labels use the 24 mm one-line QR template. The Controller request command and scan route are deployed. The V4 Controller polling/snapshot/render/finalization candidate is implemented behind a feature flag that defaults to off; its database migration and controlled acceptance remain blockers to activation.
 
 Within a family, LabelPrintService chooses the one-line or two-line physical template based on the actual human-readable text.
 
@@ -303,7 +303,7 @@ Do not restore the superseded compact physical Container payload. The V4 snapsho
 
 Location/rack Code 128 labels use `LOC:<location_code>` because that is the accepted compact machine identity for that separate label class.
 
-Permanent Controller labels use the deployed full phone-compatible payload `https://db.sheboyganlights.org/scan/CTRL/<controller_id>` in `objQr` and visible `CTRL:<controller_id>` text in `objLine1`. The route and compact `CTRL:<controller_id>` form are accepted and converge on Controller Inventory. The governed request command is also deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). V4 physical Controller consumption remains unimplemented.
+Permanent Controller labels use the deployed full phone-compatible payload `https://db.sheboyganlights.org/scan/CTRL/<controller_id>` in `objQr` and visible `CTRL:<controller_id>` text in `objLine1`. The route and compact `CTRL:<controller_id>` form are accepted and converge on Controller Inventory. The governed request command is also deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). The V4 consumer is now a disabled code candidate and must not be described as production-operational until its database migration and physical acceptance pass.
 
 ## Printer Runtime Mapping
 

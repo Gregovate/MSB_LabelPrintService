@@ -29,7 +29,8 @@ from v4_preflight_runtime import (
 # label_poll_service_v3.py
 #
 # Purpose:
-#   Poll ref.display / ref.container for print_label = true,
+#   Poll ref.display / ref.container and, when explicitly enabled,
+#   ref.controller for print_label = true,
 #   snapshot selected rows into batch tables, generate fixed CSV files,
 #   print labels through Brother b-PAC, verify print completion through
 #   the Windows print queue, write history, and clear only the snapshot
@@ -221,6 +222,11 @@ LOG_FILE = LOG_DIR / "label_service.log"
 POLL_SECONDS = int(CONFIG["service"]["poll_seconds"])
 STARTED_BY_PERSON_ID = int(CONFIG["service"]["started_by_person_id"])
 STARTED_BY_TEXT = CONFIG["service"]["started_by_text"]
+CONTROLLER_POLLING_ENABLED = CONFIG.getboolean(
+    "features",
+    "controller_polling_enabled",
+    fallback=False,
+)
 
 SNMP_OID = CONFIG.get(
     "printing",
@@ -246,6 +252,11 @@ SNMP_TIMEOUT_SECONDS = CONFIG.getfloat(
 DISPLAY_CSV = Path(CONFIG["csv_files"]["display"])
 CONTAINER_VERTICAL_CSV = Path(CONFIG["csv_files"]["container_vertical"])
 CONTAINER_HORIZONTAL_CSV = Path(CONFIG["csv_files"]["container_horizontal"])
+CONTROLLER_CSV = Path(CONFIG.get(
+    "csv_files",
+    "controller",
+    fallback=str(CSV_DIR / "controller_labels.csv"),
+))
 
 
 def load_printer_config(printer_key: str) -> dict[str, Any]:
@@ -308,6 +319,8 @@ LABEL_FAMILIES = {
 # database rule. Both use the generic QR one-line object contract.
 CONTAINER_HORIZONTAL_TEMPLATE = LABEL_FAMILIES["QR_36MM_HORIZONTAL"]["template_1_line"]
 CONTAINER_VERTICAL_TEMPLATE = LABEL_FAMILIES["QR_36MM_VERTICAL"]["template_1_line"]
+CONTROLLER_FAMILY_CODE = "QR_24MM_HORIZONTAL"
+CONTROLLER_TEMPLATE = LABEL_FAMILIES[CONTROLLER_FAMILY_CODE]["template_1_line"]
 
 # ------------------------------------------------------------
 # Brother b-PAC print flags
@@ -354,6 +367,9 @@ DISPLAY_OBJ_QR = "objQr"
 
 CONTAINER_OBJ_LINE1 = "objLine1"
 CONTAINER_OBJ_QR = "objQr"
+
+CONTROLLER_OBJ_LINE1 = "objLine1"
+CONTROLLER_OBJ_QR = "objQr"
 
 from logging.handlers import RotatingFileHandler
 
@@ -434,6 +450,66 @@ def startup_health_check() -> None:
 
             print(f"ref.display rows    : {display_count}")
             print(f"ref.container rows  : {container_count}")
+
+            if CONTROLLER_POLLING_ENABLED:
+                cur.execute("SELECT COUNT(*) FROM ref.controller;")
+                controller_count = cur.fetchone()[0]
+                print(f"ref.controller rows : {controller_count}")
+
+                cur.execute("""
+                    SELECT
+                        to_regclass('ops.controller_label_batch'),
+                        to_regclass('ops.controller_label_batch_item');
+                """)
+                (
+                    controller_batch_table,
+                    controller_item_table,
+                ) = cur.fetchone()
+
+                if controller_batch_table is None or controller_item_table is None:
+                    raise RuntimeError(
+                        "Controller polling is enabled, but the Controller label "
+                        "batch tables are not installed."
+                    )
+
+                cur.execute("""
+                    SELECT
+                        has_table_privilege(
+                            current_user,
+                            'ops.controller_label_batch',
+                            'SELECT,INSERT,UPDATE'
+                        ),
+                        has_table_privilege(
+                            current_user,
+                            'ops.controller_label_batch_item',
+                            'SELECT,INSERT,UPDATE'
+                        ),
+                        has_column_privilege(
+                            current_user,
+                            'ref.controller',
+                            'print_label',
+                            'UPDATE'
+                        );
+                """)
+                (
+                    can_write_controller_batch,
+                    can_write_controller_items,
+                    can_clear_controller_request,
+                ) = cur.fetchone()
+
+                if not all((
+                    can_write_controller_batch,
+                    can_write_controller_items,
+                    can_clear_controller_request,
+                )):
+                    raise RuntimeError(
+                        "Controller polling is enabled, but printservice does "
+                        "not have the required Controller batch/finalization permissions."
+                    )
+
+                print("Controller polling  : ENABLED")
+            else:
+                print("Controller polling  : DISABLED")
 
             # --------------------------------------------------
             # Temp write test
@@ -543,6 +619,26 @@ def pending_container_workload_signature(conn) -> str:
     return f"CONTAINER:{ids or ''}"
 
 
+def pending_controller_workload_signature(conn) -> str:
+    ids = query_value(
+        conn,
+        """
+        SELECT COALESCE(
+            string_agg(
+                controller_id::text
+                || ':' || COALESCE(label_template_id::text, ''),
+                E'\n'
+                ORDER BY controller_id
+            ),
+            ''
+        )
+        FROM ref.controller
+        WHERE print_label = true;
+        """,
+    )
+    return f"CONTROLLER:{ids or ''}"
+
+
 def pending_display_ids(
     conn,
     label_template_id: int,
@@ -572,6 +668,19 @@ def pending_container_ids(conn) -> list[int]:
         """,
     )
     return [int(row["container_id"]) for row in rows]
+
+
+def pending_controller_ids(conn) -> list[int]:
+    rows = query_rows(
+        conn,
+        """
+        SELECT controller_id
+        FROM ref.controller
+        WHERE print_label = true
+        ORDER BY controller_id;
+        """,
+    )
+    return [int(row["controller_id"]) for row in rows]
 
 
 def run_selected_workload_preflight(
@@ -925,6 +1034,52 @@ def pending_container_count(conn) -> int:
     ) or 0)
 
 
+def pending_controller_count(conn) -> int:
+    if not CONTROLLER_POLLING_ENABLED:
+        return 0
+
+    return int(query_value(
+        conn,
+        "SELECT COUNT(*) FROM ref.controller WHERE print_label = true;",
+    ) or 0)
+
+
+def pending_controller_preflight_plan(conn) -> dict[str, Any]:
+    """Return Controller family validation + signature in one DB statement."""
+    rows = query_rows(
+        conn,
+        """
+        SELECT
+            COUNT(*)::integer AS pending_count,
+            COUNT(*) FILTER (
+                WHERE lt.label_template_code = 'QR_24MM_HORIZONTAL'
+            )::integer AS eligible_count,
+            COUNT(*) FILTER (
+                WHERE lt.label_template_code IS DISTINCT FROM
+                    'QR_24MM_HORIZONTAL'
+            )::integer AS invalid_family_count,
+            MIN(lt.label_template_id) FILTER (
+                WHERE lt.label_template_code = 'QR_24MM_HORIZONTAL'
+            ) AS label_template_id,
+            'CONTROLLER:' ||
+            COALESCE(
+                string_agg(
+                    c.controller_id::text
+                    || ':' || COALESCE(c.label_template_id::text, ''),
+                    E'\n'
+                    ORDER BY c.controller_id
+                ),
+                ''
+            ) AS workload_signature
+        FROM ref.controller AS c
+        LEFT JOIN ref.label_template AS lt
+          ON lt.label_template_id = c.label_template_id
+        WHERE c.print_label = true;
+        """,
+    )
+    return rows[0]
+
+
 def pending_container_orientations(conn) -> list[dict[str, Any]]:
     """Return the orientation groups represented by pending Containers."""
     return query_rows(
@@ -996,6 +1151,23 @@ def active_container_batch_id(conn) -> int | None:
         FROM ops.container_label_batch
         WHERE status = 'PRINTING'
         ORDER BY container_label_batch_id DESC
+        LIMIT 1;
+        """,
+    )
+    return int(batch_id) if batch_id is not None else None
+
+
+def active_controller_batch_id(conn) -> int | None:
+    if not CONTROLLER_POLLING_ENABLED:
+        return None
+
+    batch_id = query_value(
+        conn,
+        """
+        SELECT controller_label_batch_id
+        FROM ops.controller_label_batch
+        WHERE status = 'PRINTING'
+        ORDER BY controller_label_batch_id DESC
         LIMIT 1;
         """,
     )
@@ -1326,6 +1498,145 @@ def create_container_batch(
         "started_by_person_id=%s started_by_text=%s",
         batch_id,
         len(container_ids),
+        person_id,
+        person_text,
+    )
+
+    return int(batch_id)
+
+
+def create_controller_batch(
+    conn,
+    expected_signature: str,
+    label_template_id: int,
+) -> int | None:
+    controller_ids = pending_controller_ids(conn)
+    if not controller_ids:
+        return None
+
+    locked_rows = query_rows(
+        conn,
+        """
+        SELECT
+            c.controller_id,
+            c.updated_by_person_id,
+            c.updated_by
+        FROM ref.controller AS c
+        JOIN ref.label_template AS lt
+          ON lt.label_template_id = c.label_template_id
+        WHERE c.controller_id = ANY(%(controller_ids)s)
+          AND c.print_label = true
+          AND c.label_template_id = %(label_template_id)s
+          AND lt.label_template_code = 'QR_24MM_HORIZONTAL'
+        ORDER BY c.controller_id
+        FOR UPDATE OF c;
+        """,
+        {
+            "controller_ids": controller_ids,
+            "label_template_id": label_template_id,
+        },
+    )
+    locked_ids = [int(row["controller_id"]) for row in locked_rows]
+
+    if locked_ids != controller_ids:
+        logging.warning(
+            "Controller request set changed or contains an invalid family "
+            "while acquiring snapshot locks; no batch created. "
+            "expected_ids=%s locked_ids=%s",
+            controller_ids,
+            locked_ids,
+        )
+        return None
+
+    locked_signature = pending_controller_workload_signature(conn)
+    if locked_signature != expected_signature:
+        logging.warning(
+            "Controller request/family state changed before snapshot freeze; "
+            "no batch created. expected=%s locked=%s",
+            expected_signature,
+            locked_signature,
+        )
+        return None
+
+    actors = {
+        (row["updated_by_person_id"], row["updated_by"])
+        for row in locked_rows
+    }
+    if len(actors) > 1:
+        logging.warning(
+            "Multiple actors detected in frozen Controller workload. "
+            "Using first row."
+        )
+
+    first_row = locked_rows[0]
+    person_id = first_row["updated_by_person_id"]
+    person_text = first_row["updated_by"]
+
+    if person_id is None:
+        logging.warning(
+            "Controller batch actor not found from frozen ref.controller rows. "
+            "Falling back to service identity."
+        )
+        person_id = STARTED_BY_PERSON_ID
+        person_text = STARTED_BY_TEXT
+
+    batch_id = query_value(
+        conn,
+        """
+        INSERT INTO ops.controller_label_batch (
+            started_by_person_id,
+            started_by_text,
+            label_template_id,
+            status,
+            notes
+        )
+        VALUES (
+            %(person_id)s,
+            %(person_text)s,
+            %(label_template_id)s,
+            'PRINTING',
+            'Polling service snapshot'
+        )
+        RETURNING controller_label_batch_id;
+        """,
+        {
+            "person_id": person_id,
+            "person_text": person_text,
+            "label_template_id": label_template_id,
+        },
+    )
+
+    exec_sql(
+        conn,
+        load_sql("controller_snapshot_v4.sql"),
+        {
+            "batch_id": batch_id,
+            "controller_ids": controller_ids,
+        },
+    )
+
+    row_count = int(query_value(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM ops.controller_label_batch_item
+        WHERE controller_label_batch_id = %(batch_id)s;
+        """,
+        {"batch_id": batch_id},
+    ) or 0)
+
+    if row_count != len(controller_ids):
+        raise RuntimeError(
+            f"Controller snapshot row count mismatch: expected "
+            f"{len(controller_ids)}, created {row_count}. "
+            "Transaction must roll back."
+        )
+
+    logging.info(
+        "Created Controller batch %s rows=%s "
+        "started_by_person_id=%s started_by_text=%s",
+        batch_id,
+        len(controller_ids),
         person_id,
         person_text,
     )
@@ -1846,6 +2157,104 @@ def print_container_batch(
 
 
 # ============================================================
+# CONTROLLER PRINTING
+# ============================================================
+
+def print_controller_batch(
+    rows: list[dict[str, Any]],
+    batch_log_path: Path,
+) -> None:
+    """Print one 24 mm permanent identity label per Controller snapshot row."""
+    if not rows:
+        write_batch_log(batch_log_path, "No Controller rows to print.")
+        return
+
+    family = LABEL_FAMILIES[CONTROLLER_FAMILY_CODE]
+    printer_name = family["printer"]["queue_name"]
+    template_path = CONTROLLER_TEMPLATE
+    if template_path is None:
+        raise RuntimeError(
+            f"Family '{CONTROLLER_FAMILY_CODE}' has no one-line template."
+        )
+
+    baseline_jobs = get_print_jobs(printer_name)
+    baseline_job_ids = {
+        int(job.get("JobId"))
+        for job in baseline_jobs
+    }
+    write_batch_log(
+        batch_log_path,
+        "Baseline queue before Controller print: "
+        f"{summarize_print_jobs(baseline_jobs)}",
+    )
+
+    doc = create_bpac_document()
+    write_batch_log(
+        batch_log_path,
+        f"Opening Controller template: {template_path}",
+    )
+
+    opened = doc.Open(str(template_path))
+    write_batch_log(batch_log_path, f"Template opened: {opened}")
+    if not opened:
+        raise RuntimeError(
+            f"b-PAC could not open Controller template: {template_path}"
+        )
+
+    set_printer_ok = doc.SetPrinter(printer_name, True)
+    write_batch_log(
+        batch_log_path,
+        f"SetPrinter('{printer_name}') = {set_printer_ok}",
+    )
+    if not set_printer_ok:
+        raise RuntimeError(
+            f"b-PAC could not set Controller printer '{printer_name}'."
+        )
+
+    log_media_status(doc, batch_log_path)
+
+    obj_line1 = get_required_object(doc, CONTROLLER_OBJ_LINE1)
+    obj_qr = get_required_object(doc, CONTROLLER_OBJ_QR)
+    write_batch_log(
+        batch_log_path,
+        f"Resolved Controller objects: line1={CONTROLLER_OBJ_LINE1}, "
+        f"qr={CONTROLLER_OBJ_QR}",
+    )
+
+    doc.StartPrint("", PRINT_FLAGS)
+    write_batch_log(
+        batch_log_path,
+        f"StartPrint called with flags={hex(PRINT_FLAGS)}",
+    )
+
+    for idx, row in enumerate(rows, start=1):
+        obj_line1.Text = row.get("line1", "") or ""
+        obj_qr.Text = row.get("qr_url", "") or ""
+
+        result = doc.PrintOut(1, 0)
+        write_batch_log(
+            batch_log_path,
+            f"Queued Controller label {idx}/{len(rows)} "
+            f"controller_id={row.get('controller_id')} result={result} "
+            f"line1={row.get('line1')}",
+        )
+        if not result:
+            raise RuntimeError(
+                f"Controller PrintOut failed on row {idx} "
+                f"controller_id={row.get('controller_id')}"
+            )
+
+    finish_bpac_document(doc, batch_log_path)
+
+    wait_for_spooler_job_to_clear(
+        printer_name=printer_name,
+        known_job_ids=baseline_job_ids,
+        expected_document=template_path.stem,
+        batch_log_path=batch_log_path,
+    )
+
+
+# ============================================================
 # FAILURE HANDLING HELPERS
 # ============================================================
 
@@ -1870,6 +2279,19 @@ def mark_container_batch_failed(conn, batch_id: int, reason: str) -> None:
         SET status = 'FAILED',
             notes = COALESCE(notes, '') || E'\nFAILED: ' || %(reason)s
         WHERE container_label_batch_id = %(batch_id)s;
+        """,
+        {"batch_id": batch_id, "reason": reason[:1000]},
+    )
+
+
+def mark_controller_batch_failed(conn, batch_id: int, reason: str) -> None:
+    exec_sql(
+        conn,
+        """
+        UPDATE ops.controller_label_batch
+        SET status = 'FAILED',
+            notes = COALESCE(notes, '') || E'\nFAILED: ' || %(reason)s
+        WHERE controller_label_batch_id = %(batch_id)s;
         """,
         {"batch_id": batch_id, "reason": reason[:1000]},
     )
@@ -1918,6 +2340,34 @@ def get_failed_container_batch_id(conn):
             FROM latest_failed f
             CROSS JOIN latest_completed c
             WHERE f.container_label_batch_id > c.completed_batch_id;
+        """)
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def get_failed_controller_batch_id(conn):
+    if not CONTROLLER_POLLING_ENABLED:
+        return None
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH latest_failed AS (
+                SELECT controller_label_batch_id
+                FROM ops.controller_label_batch
+                WHERE status = 'FAILED'
+                ORDER BY controller_label_batch_id DESC
+                LIMIT 1
+            ),
+            latest_completed AS (
+                SELECT COALESCE(MAX(controller_label_batch_id), 0)
+                    AS completed_batch_id
+                FROM ops.controller_label_batch
+                WHERE status = 'COMPLETED'
+            )
+            SELECT f.controller_label_batch_id
+            FROM latest_failed AS f
+            CROSS JOIN latest_completed AS c
+            WHERE f.controller_label_batch_id > c.completed_batch_id;
         """)
         row = cur.fetchone()
         return row[0] if row else None
@@ -2012,6 +2462,45 @@ def process_container(conn, container_batch_id: int) -> None:
     logging.info("Container batch %s completed successfully.", container_batch_id)
 
 
+def process_controller(conn, controller_batch_id: int) -> None:
+    rows = query_rows(
+        conn,
+        load_sql("controller_export.sql"),
+        {"batch_id": controller_batch_id},
+    )
+    write_csv(CONTROLLER_CSV, rows)
+
+    batch_log_path = new_batch_log_path("controller", controller_batch_id)
+    write_batch_log(
+        batch_log_path,
+        f"Controller batch {controller_batch_id} created.",
+    )
+    write_batch_log(
+        batch_log_path,
+        f"Controller CSV written: {CONTROLLER_CSV}",
+    )
+    write_batch_log(
+        batch_log_path,
+        f"Controller row count: {len(rows)}",
+    )
+
+    print_controller_batch(rows, batch_log_path)
+
+    exec_sql(
+        conn,
+        load_sql("controller_finalized.sql"),
+        {"batch_id": controller_batch_id},
+    )
+    write_batch_log(
+        batch_log_path,
+        "Controller batch finalized successfully.",
+    )
+    logging.info(
+        "Controller batch %s completed successfully.",
+        controller_batch_id,
+    )
+
+
 # ============================================================
 # MAIN LOOP
 # ============================================================
@@ -2046,11 +2535,14 @@ def main() -> None:
                     for row in display_families
                 )
                 container_pending = pending_container_count(conn)
+                controller_pending = pending_controller_count(conn)
 
                 logging.info(
-                    "Pending labels - displays=%s containers=%s display_families=%s",
+                    "Pending labels - displays=%s containers=%s controllers=%s "
+                    "display_families=%s controller_polling_enabled=%s",
                     display_pending,
                     container_pending,
+                    controller_pending,
                     [
                         (
                             row["label_template_id"],
@@ -2059,6 +2551,7 @@ def main() -> None:
                         )
                         for row in display_families
                     ],
+                    CONTROLLER_POLLING_ENABLED,
                 )
 
                 if len(display_families) > 1:
@@ -2084,7 +2577,11 @@ def main() -> None:
                     else None
                 )
 
-                if display_pending == 0 and container_pending == 0:
+                if (
+                    display_pending == 0
+                    and container_pending == 0
+                    and controller_pending == 0
+                ):
                     cancelled_preflight_signature = None
                     logging.info("No pending labels. Service idle.")
                     conn.rollback()
@@ -2097,12 +2594,20 @@ def main() -> None:
                 # --------------------------------------------------
                 existing_display_batch_id = active_display_batch_id(conn)
                 existing_container_batch_id = active_container_batch_id(conn)
+                existing_controller_batch_id = active_controller_batch_id(conn)
 
-                if existing_display_batch_id or existing_container_batch_id:
+                if (
+                    existing_display_batch_id
+                    or existing_container_batch_id
+                    or existing_controller_batch_id
+                ):
                     logging.warning(
-                        "Active PRINTING batch already exists. display_batch_id=%s container_batch_id=%s",
+                        "Active PRINTING batch already exists. "
+                        "display_batch_id=%s container_batch_id=%s "
+                        "controller_batch_id=%s",
                         existing_display_batch_id,
                         existing_container_batch_id,
+                        existing_controller_batch_id,
                     )
                     conn.rollback()
                     clear_lock()
@@ -2114,17 +2619,26 @@ def main() -> None:
                 # --------------------------------------------------
                 failed_display_batch_id = get_failed_display_batch_id(conn)
                 failed_container_batch_id = get_failed_container_batch_id(conn)
+                failed_controller_batch_id = get_failed_controller_batch_id(conn)
 
-                if failed_display_batch_id or failed_container_batch_id:
+                if (
+                    failed_display_batch_id
+                    or failed_container_batch_id
+                    or failed_controller_batch_id
+                ):
                     logging.error(
-                        "FAILED batch exists - blocking retry. display_batch_id=%s container_batch_id=%s",
+                        "FAILED batch exists - blocking retry. "
+                        "display_batch_id=%s container_batch_id=%s "
+                        "controller_batch_id=%s",
                         failed_display_batch_id,
                         failed_container_batch_id,
+                        failed_controller_batch_id,
                     )
                     print(
                         f"FAILED batch exists - manual intervention required. "
                         f"display_batch_id={failed_display_batch_id} "
-                        f"container_batch_id={failed_container_batch_id}"
+                        f"container_batch_id={failed_container_batch_id} "
+                        f"controller_batch_id={failed_controller_batch_id}"
                     )
                     conn.rollback()
                     clear_lock()
@@ -2469,11 +2983,130 @@ def main() -> None:
 
                     cancelled_preflight_signature = None
 
+                elif controller_pending > 0:
+                    controller_plan = pending_controller_preflight_plan(conn)
+                    if int(controller_plan["pending_count"]) == 0:
+                        logging.warning(
+                            "Pending Controller workload disappeared before "
+                            "preflight planning; restarting poll."
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    invalid_family_count = int(
+                        controller_plan["invalid_family_count"]
+                    )
+                    if invalid_family_count > 0:
+                        logging.error(
+                            "Pending Controller requests include %s row(s) "
+                            "without the required QR_24MM_HORIZONTAL family. "
+                            "No Controller batch will be created.",
+                            invalid_family_count,
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    if int(controller_plan["eligible_count"]) != int(
+                        controller_plan["pending_count"]
+                    ):
+                        raise RuntimeError(
+                            "Controller preflight plan did not account for every "
+                            "pending request."
+                        )
+
+                    controller_label_template_id = int(
+                        controller_plan["label_template_id"]
+                    )
+                    controller_family = LABEL_FAMILIES[
+                        CONTROLLER_FAMILY_CODE
+                    ]
+                    if CONTROLLER_TEMPLATE is None:
+                        raise RuntimeError(
+                            f"Family '{CONTROLLER_FAMILY_CODE}' has no "
+                            "one-line template."
+                        )
+
+                    controller_preflight_signature = str(
+                        controller_plan["workload_signature"]
+                    )
+
+                    if (
+                        cancelled_preflight_signature
+                        == controller_preflight_signature
+                    ):
+                        logging.info(
+                            "Preflight remains cancelled for unchanged "
+                            "Controller request set; waiting for request change "
+                            "or service restart. signature=%s",
+                            controller_preflight_signature,
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    controller_preflight_passed = (
+                        run_selected_workload_preflight(
+                            workload_name="Controller labels (24 mm)",
+                            family=controller_family,
+                            template_specs=[
+                                (
+                                    CONTROLLER_TEMPLATE,
+                                    (
+                                        CONTROLLER_OBJ_LINE1,
+                                        CONTROLLER_OBJ_QR,
+                                    ),
+                                )
+                            ],
+                            sql_filenames=(
+                                "controller_snapshot_v4.sql",
+                                "controller_export.sql",
+                                "controller_finalized.sql",
+                            ),
+                            csv_paths=(CONTROLLER_CSV,),
+                        )
+                    )
+
+                    if not controller_preflight_passed:
+                        cancelled_preflight_signature = (
+                            controller_preflight_signature
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    controller_postflight_signature = (
+                        pending_controller_workload_signature(conn)
+                    )
+                    if (
+                        controller_postflight_signature
+                        != controller_preflight_signature
+                    ):
+                        logging.warning(
+                            "Controller pending workload changed during "
+                            "preflight; no batch will be created. "
+                            "before=%s after=%s",
+                            controller_preflight_signature,
+                            controller_postflight_signature,
+                        )
+                        conn.rollback()
+                        clear_lock()
+                        time.sleep(POLL_SECONDS)
+                        continue
+
+                    cancelled_preflight_signature = None
+
                 # --------------------------------------------------
                 # Step 3: Only create batches AFTER printer passes Updated 04/16/26 for warning and loop
                 # --------------------------------------------------
                 display_batch_id = None
                 container_batch_id = None
+                controller_batch_id = None
 
                 if display_pending > 0:
                     display_batch_id = create_display_batch(
@@ -2486,14 +3119,26 @@ def main() -> None:
                         conn,
                         container_postflight_signature,
                     )
+                elif controller_pending > 0:
+                    controller_batch_id = create_controller_batch(
+                        conn,
+                        controller_postflight_signature,
+                        controller_label_template_id,
+                    )
 
                 logging.info(
-                    "Batch creation results - display_batch_id=%s container_batch_id=%s",
+                    "Batch creation results - display_batch_id=%s "
+                    "container_batch_id=%s controller_batch_id=%s",
                     display_batch_id,
                     container_batch_id,
+                    controller_batch_id,
                 )
 
-                if not display_batch_id and not container_batch_id:
+                if (
+                    not display_batch_id
+                    and not container_batch_id
+                    and not controller_batch_id
+                ):
                     conn.rollback()
                     clear_lock()
                     time.sleep(POLL_SECONDS)
@@ -2506,9 +3151,11 @@ def main() -> None:
                 # --------------------------------------------------
                 conn.commit()
                 logging.info(
-                    "Batch rows committed before printing. display_batch_id=%s container_batch_id=%s",
+                    "Batch rows committed before printing. display_batch_id=%s "
+                    "container_batch_id=%s controller_batch_id=%s",
                     display_batch_id,
                     container_batch_id,
+                    controller_batch_id,
                 )
 
                 try:
@@ -2520,11 +3167,16 @@ def main() -> None:
                     if container_batch_id:
                         process_container(conn, container_batch_id)
 
+                    if controller_batch_id:
+                        process_controller(conn, controller_batch_id)
+
                     conn.commit()
                     logging.info(
-                        "Batch cycle committed successfully. display_batch_id=%s container_batch_id=%s",
+                        "Batch cycle committed successfully. display_batch_id=%s "
+                        "container_batch_id=%s controller_batch_id=%s",
                         display_batch_id,
                         container_batch_id,
+                        controller_batch_id,
                     )
 
                 except Exception as batch_exc:
@@ -2539,12 +3191,21 @@ def main() -> None:
                     if container_batch_id:
                         mark_container_batch_failed(conn, container_batch_id, str(batch_exc))
 
+                    if controller_batch_id:
+                        mark_controller_batch_failed(
+                            conn,
+                            controller_batch_id,
+                            str(batch_exc),
+                        )
+
                     conn.commit()
 
                     logging.exception(
-                        "Batch cycle failed. display_batch_id=%s container_batch_id=%s error=%s",
+                        "Batch cycle failed. display_batch_id=%s "
+                        "container_batch_id=%s controller_batch_id=%s error=%s",
                         display_batch_id,
                         container_batch_id,
+                        controller_batch_id,
                         batch_exc,
                     )
 

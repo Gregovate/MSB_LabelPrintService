@@ -4,7 +4,7 @@
 |---|---|
 | Document Type | Cross-repository integration contract |
 | System | MSB Production Database / Controller Inventory / LabelPrintService |
-| Status | CURRENT — upstream request and scan contracts deployed; physical consumer pending |
+| Status | IN DEVELOPMENT — gated V4 consumer implemented; database migration and physical acceptance pending |
 | Effective Date | 2026-09-03 |
 | Controlling Issue | [LabelPrintService #14](https://github.com/Gregovate/MSB_LabelPrintService/issues/14) |
 | Pull Request | [LabelPrintService #15](https://github.com/Gregovate/MSB_LabelPrintService/pull/15) |
@@ -88,20 +88,43 @@ The full URL is the permanent physical QR payload. Zebra Advanced Data Formattin
 
 The existing V4 family preflight must reject missing, wrong-width, wrong-type, cover-open, printer-unavailable, or unsafe-queue states before an execution batch is created.
 
-## LabelPrintService Consumer — Not Yet Implemented
+## LabelPrintService Consumer Candidate
 
-The upstream request and scan route are complete. V4 still needs:
+The draft V4 branch now contains the Controller consumer:
 
-1. deterministic polling of pending `ref.controller.print_label` rows;
-2. 24 mm family selection and full preflight;
-3. immutable Controller batch header/item snapshot;
-4. b-PAC rendering through the approved object contract;
-5. one-label-at-a-time execution evidence;
-6. targeted success finalization that clears only the snapshotted requests actually printed;
-7. restart, failure, and no-double-print behavior;
-8. controlled physical acceptance from the deployed Scheduled Task context.
+- deterministic polling of pending `ref.controller.print_label` rows;
+- validation that every pending Controller resolves to `QR_24MM_HORIZONTAL`;
+- 24 mm laminated-media and one-line-template preflight;
+- workload-signature verification before and after preflight;
+- row locking and immutable Controller batch/item snapshot;
+- direct b-PAC assignment to `objLine1` and `objQr`;
+- one physical label per snapshotted Controller;
+- targeted finalization that clears only the Controllers in the completed batch;
+- cached print-count/time/requestor update;
+- failed-batch persistence and repeat-print blocking.
 
-A failed preflight must create no execution batch and leave the request pending.
+Tracked SQL:
+
+```text
+sql/controller_snapshot_v4.sql
+sql/controller_export.sql
+sql/controller_finalized.sql
+```
+
+The consumer is guarded by `controller_polling_enabled`, which defaults to
+`false`. The current PRINT-SERVER local configuration does not enable it. A
+failed preflight creates no execution batch and leaves the request pending.
+
+The Production Database candidate migration is
+`Controllers/Database/025_create_controller_label_print_batches.sql` on branch
+`agent/controller-label-print-batches` in
+`Gregovate/MSB-Production-Database-Project`. It creates the required
+`ops.controller_label_batch*` schema, assigns the 24 mm family/default, and
+grants bounded `printservice` access.
+
+The candidate is not production-complete until the migration is installed, the
+feature is deliberately enabled, and request-to-physical-label plus
+restart/no-double-print behavior are accepted.
 
 ## Pending-Request Safety Check
 

@@ -124,11 +124,11 @@ An unresolved/recovery-required batch remains only the safety fallback for an un
 |---|---|---|
 | Display | `ref.display.print_label` | V4 implemented |
 | Container | `ref.container.print_label` | V4 implemented |
-| Controller | `ref.request_controller_label(p_email, p_controller_id)` sets `ref.controller.print_label` | governed request and CTRL scan route deployed; V4 consumer missing |
+| Controller | `ref.request_controller_label(p_email, p_controller_id)` sets `ref.controller.print_label` | governed request/route deployed; gated V4 consumer implemented but disabled pending DB migration and acceptance |
 | Location | governed request on `ref.storage_location` | request field/command and V4 consumer missing |
 | Wiring | purpose-built operational request queue | physical format approved; request workflow and V4 consumer missing |
 
-The Controller request and scan contracts are authoritative and deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). Controller still requires its LabelPrintService immutable snapshot/batch, renderer, targeted finalization, audit evidence, and no-double-print behavior.
+The Controller request and scan contracts are authoritative and deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). The draft V4 branch now implements the Controller poll/snapshot/render/finalization path behind a feature flag that defaults to off. Production activation still requires the Controller batch migration, pending-request review, and controlled physical/restart/no-double-print acceptance.
 
 Location and Wiring still require governed request contracts as well as their service consumers. The 12 mm fold-over Wiring physical format and direct b-PAC print path are approved; this approval does not create the missing request/polling pipeline.
 
