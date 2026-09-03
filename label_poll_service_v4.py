@@ -22,6 +22,7 @@ from v4_preflight_runtime import (
     snmp_family_preflight,
     validate_runtime_prerequisites,
 )
+from spooler_observer_runtime import SpoolerJobObserver
 
 # ============================================================
 # ============================================================
@@ -57,7 +58,9 @@ from v4_preflight_runtime import (
 # Print verification strategy:
 #   - b-PAC is used only to submit the job.
 #   - Real success/failure is verified through the Windows print queue.
-#   - A job must appear in the queue and then clear within timeout.
+#   - Queue observation begins before b-PAC submission so short-lived jobs
+#     are retained even when they clear before the main thread checks them.
+#   - A job must be observed and then clear within timeout.
 #   - If the job never appears or remains stuck, the batch is FAILED and
 #     the original print_label flags remain set for operator retry.
 #
@@ -72,6 +75,13 @@ from v4_preflight_runtime import (
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-09-03 — v4.1.0-rc2
+#   • FIX: Observe Windows spooler jobs before b-PAC submission
+#       - Prevents a fast one-label job from clearing before observation begins
+#       - Retains newly observed job IDs until completion validation
+#       - Still fails when no new job is observed or an observed job is stuck
+#       - Applies to Display, Container, and Controller printing
+#
 ## 2026-09-03 — v4.1.0-rc1
 #   • FEATURE: Added gated permanent Controller ID label consumption
 #       - Polls ref.controller.print_label only when explicitly enabled
@@ -184,7 +194,7 @@ from v4_preflight_runtime import (
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc1"
+SERVICE_VERSION = "4.1.0-rc2"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -1763,64 +1773,19 @@ def summarize_print_jobs(jobs: list[dict[str, Any]]) -> str:
     return "; ".join(parts)
 
 
-def wait_for_spooler_job_to_clear(
+def create_spooler_job_observer(
     printer_name: str,
     known_job_ids: set[int],
     expected_document: str,
     batch_log_path: Path,
-    appear_timeout_seconds: int = 15,
-    clear_timeout_seconds: int = 90,
-    poll_interval_seconds: float = 1.0,
-) -> None:
-    expected_document_lower = expected_document.lower()
-    seen_job_ids: set[int] = set()
-
-    write_batch_log(
-        batch_log_path,
-        f"Spooler watch started: printer='{printer_name}', expected_document='{expected_document}'",
-    )
-
-    appear_deadline = time.time() + appear_timeout_seconds
-    while time.time() < appear_deadline and not seen_job_ids:
-        jobs = get_print_jobs(printer_name)
-
-        for job in jobs:
-            job_id = int(job.get("JobId"))
-            document_name = str(job.get("pDocument") or "")
-
-            if job_id not in known_job_ids or expected_document_lower in document_name.lower():
-                seen_job_ids.add(job_id)
-
-        if not seen_job_ids:
-            time.sleep(poll_interval_seconds)
-
-    if not seen_job_ids:
-        raise RuntimeError(
-            f"No new spooler job appeared within {appear_timeout_seconds} seconds."
-        )
-
-    write_batch_log(
-        batch_log_path,
-        f"Spooler job(s) detected: {sorted(seen_job_ids)}",
-    )
-
-    clear_deadline = time.time() + clear_timeout_seconds
-    while time.time() < clear_deadline:
-        jobs = get_print_jobs(printer_name)
-        current_job_ids = {int(job.get('JobId')) for job in jobs}
-
-        if seen_job_ids.isdisjoint(current_job_ids):
-            write_batch_log(batch_log_path, "Spooler job cleared successfully.")
-            return
-
-        write_batch_log(
-            batch_log_path,
-            f"Spooler still busy: {summarize_print_jobs(jobs)}",
-        )
-        time.sleep(poll_interval_seconds)
-
-    raise RuntimeError(
-        f"Spooler job appeared but did not clear within {clear_timeout_seconds} seconds."
+) -> SpoolerJobObserver:
+    """Build the observer that must be started before ``StartPrint``."""
+    return SpoolerJobObserver(
+        printer_name=printer_name,
+        known_job_ids=known_job_ids,
+        expected_document=expected_document,
+        read_jobs=get_print_jobs,
+        log_message=lambda message: write_batch_log(batch_log_path, message),
     )
 
 # ============================================================
@@ -1918,43 +1883,48 @@ def print_display_rows_with_template(
         f"qr={DISPLAY_OBJ_QR}",
     )
 
-    doc.StartPrint("", PRINT_FLAGS)
-    write_batch_log(
-        batch_log_path,
-        f"StartPrint called with flags={hex(PRINT_FLAGS)}",
-    )
-
-    for idx, row in enumerate(rows, start=1):
-        obj_line1.Text = row.get("line1", "") or ""
-        obj_qr.Text = row.get("qr_url", "") or ""
-
-        if obj_line2 is not None:
-            obj_line2.Text = row.get("line2", "") or ""
-
-        result = doc.PrintOut(1, 0)
-
-        write_batch_log(
-            batch_log_path,
-            f"Queued Display label {idx}/{len(rows)} "
-            f"family={family['code']} variant={variant} "
-            f"display_id={row.get('display_id')} result={result} "
-            f"line1={row.get('line1')} line2={row.get('line2')}",
-        )
-
-        if not result:
-            raise RuntimeError(
-                f"Display PrintOut failed on row {idx} "
-                f"display_id={row.get('display_id')}"
-            )
-
-    finish_bpac_document(doc, batch_log_path)
-
-    wait_for_spooler_job_to_clear(
+    spooler_observer = create_spooler_job_observer(
         printer_name=printer_name,
         known_job_ids=baseline_job_ids,
         expected_document=template_path.stem,
         batch_log_path=batch_log_path,
     )
+    spooler_observer.start()
+
+    try:
+        doc.StartPrint("", PRINT_FLAGS)
+        write_batch_log(
+            batch_log_path,
+            f"StartPrint called with flags={hex(PRINT_FLAGS)}",
+        )
+
+        for idx, row in enumerate(rows, start=1):
+            obj_line1.Text = row.get("line1", "") or ""
+            obj_qr.Text = row.get("qr_url", "") or ""
+
+            if obj_line2 is not None:
+                obj_line2.Text = row.get("line2", "") or ""
+
+            result = doc.PrintOut(1, 0)
+
+            write_batch_log(
+                batch_log_path,
+                f"Queued Display label {idx}/{len(rows)} "
+                f"family={family['code']} variant={variant} "
+                f"display_id={row.get('display_id')} result={result} "
+                f"line1={row.get('line1')} line2={row.get('line2')}",
+            )
+
+            if not result:
+                raise RuntimeError(
+                    f"Display PrintOut failed on row {idx} "
+                    f"display_id={row.get('display_id')}"
+                )
+
+        finish_bpac_document(doc, batch_log_path)
+        spooler_observer.wait_for_completion()
+    finally:
+        spooler_observer.stop()
 
 
 def print_display_batch(
@@ -2134,39 +2104,44 @@ def print_container_batch(
         f"qr={CONTAINER_OBJ_QR}",
     )
 
-    doc.StartPrint("", PRINT_FLAGS)
-    write_batch_log(
-        batch_log_path,
-        f"StartPrint called with flags={hex(PRINT_FLAGS)}",
-    )
-
-    for idx, row in enumerate(rows_to_print, start=1):
-        obj_line1.Text = row.get("container_label", "") or ""
-        obj_qr.Text = row.get("qr_url", "") or ""
-
-        result = doc.PrintOut(1, 0)
-        write_batch_log(
-            batch_log_path,
-            f"Queued {normalized_orientation.lower()} Container label "
-            f"{idx}/{len(rows_to_print)} "
-            f"container_id={row.get('container_id')} result={result} "
-            f"label={row.get('container_label')}",
-        )
-
-        if not result:
-            raise RuntimeError(
-                f"{normalized_orientation} Container PrintOut failed on "
-                f"row {idx} container_id={row.get('container_id')}"
-            )
-
-    finish_bpac_document(doc, batch_log_path)
-
-    wait_for_spooler_job_to_clear(
+    spooler_observer = create_spooler_job_observer(
         printer_name=printer_name,
         known_job_ids=baseline_job_ids,
         expected_document=template_path.stem,
         batch_log_path=batch_log_path,
     )
+    spooler_observer.start()
+
+    try:
+        doc.StartPrint("", PRINT_FLAGS)
+        write_batch_log(
+            batch_log_path,
+            f"StartPrint called with flags={hex(PRINT_FLAGS)}",
+        )
+
+        for idx, row in enumerate(rows_to_print, start=1):
+            obj_line1.Text = row.get("container_label", "") or ""
+            obj_qr.Text = row.get("qr_url", "") or ""
+
+            result = doc.PrintOut(1, 0)
+            write_batch_log(
+                batch_log_path,
+                f"Queued {normalized_orientation.lower()} Container label "
+                f"{idx}/{len(rows_to_print)} "
+                f"container_id={row.get('container_id')} result={result} "
+                f"label={row.get('container_label')}",
+            )
+
+            if not result:
+                raise RuntimeError(
+                    f"{normalized_orientation} Container PrintOut failed on "
+                    f"row {idx} container_id={row.get('container_id')}"
+                )
+
+        finish_bpac_document(doc, batch_log_path)
+        spooler_observer.wait_for_completion()
+    finally:
+        spooler_observer.stop()
 
 
 # ============================================================
@@ -2234,37 +2209,42 @@ def print_controller_batch(
         f"qr={CONTROLLER_OBJ_QR}",
     )
 
-    doc.StartPrint("", PRINT_FLAGS)
-    write_batch_log(
-        batch_log_path,
-        f"StartPrint called with flags={hex(PRINT_FLAGS)}",
-    )
-
-    for idx, row in enumerate(rows, start=1):
-        obj_line1.Text = row.get("line1", "") or ""
-        obj_qr.Text = row.get("qr_url", "") or ""
-
-        result = doc.PrintOut(1, 0)
-        write_batch_log(
-            batch_log_path,
-            f"Queued Controller label {idx}/{len(rows)} "
-            f"controller_id={row.get('controller_id')} result={result} "
-            f"line1={row.get('line1')}",
-        )
-        if not result:
-            raise RuntimeError(
-                f"Controller PrintOut failed on row {idx} "
-                f"controller_id={row.get('controller_id')}"
-            )
-
-    finish_bpac_document(doc, batch_log_path)
-
-    wait_for_spooler_job_to_clear(
+    spooler_observer = create_spooler_job_observer(
         printer_name=printer_name,
         known_job_ids=baseline_job_ids,
         expected_document=template_path.stem,
         batch_log_path=batch_log_path,
     )
+    spooler_observer.start()
+
+    try:
+        doc.StartPrint("", PRINT_FLAGS)
+        write_batch_log(
+            batch_log_path,
+            f"StartPrint called with flags={hex(PRINT_FLAGS)}",
+        )
+
+        for idx, row in enumerate(rows, start=1):
+            obj_line1.Text = row.get("line1", "") or ""
+            obj_qr.Text = row.get("qr_url", "") or ""
+
+            result = doc.PrintOut(1, 0)
+            write_batch_log(
+                batch_log_path,
+                f"Queued Controller label {idx}/{len(rows)} "
+                f"controller_id={row.get('controller_id')} result={result} "
+                f"line1={row.get('line1')}",
+            )
+            if not result:
+                raise RuntimeError(
+                    f"Controller PrintOut failed on row {idx} "
+                    f"controller_id={row.get('controller_id')}"
+                )
+
+        finish_bpac_document(doc, batch_log_path)
+        spooler_observer.wait_for_completion()
+    finally:
+        spooler_observer.stop()
 
 
 # ============================================================

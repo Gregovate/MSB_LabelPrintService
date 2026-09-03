@@ -4,11 +4,11 @@
 |---|---|
 | Document Type | Cross-repository integration contract |
 | System | MSB Production Database / Controller Inventory / LabelPrintService |
-| Status | DEPLOYMENT CANDIDATE — database installed; gated V4 consumer awaiting physical acceptance |
+| Status | PHYSICAL FORMAT AND SCAN ACCEPTED — spooler-observer hotfix awaiting deployment acceptance |
 | Effective Date | 2026-09-03 |
 | Controlling Issue | [LabelPrintService #18](https://github.com/Gregovate/MSB_LabelPrintService/issues/18) |
-| Pull Request | [LabelPrintService #22](https://github.com/Gregovate/MSB_LabelPrintService/pull/22) |
-| Controlled Candidate Version | `4.1.0-rc1` |
+| Pull Requests | [LabelPrintService #22](https://github.com/Gregovate/MSB_LabelPrintService/pull/22), [#23](https://github.com/Gregovate/MSB_LabelPrintService/pull/23) |
+| Controlled Candidate Version | `4.1.0-rc2` |
 
 ## Purpose
 
@@ -89,9 +89,9 @@ The full URL is the permanent physical QR payload. Zebra Advanced Data Formattin
 
 The existing V4 family preflight must reject missing, wrong-width, wrong-type, cover-open, printer-unavailable, or unsafe-queue states before an execution batch is created.
 
-## LabelPrintService Consumer Candidate
+## LabelPrintService Consumer
 
-The draft V4 branch now contains the Controller consumer:
+The merged V4 service contains the Controller consumer:
 
 - deterministic polling of pending `ref.controller.print_label` rows;
 - validation that every pending Controller resolves to `QR_24MM_HORIZONTAL`;
@@ -112,13 +112,15 @@ sql/controller_export.sql
 sql/controller_finalized.sql
 ```
 
-The consumer is guarded by `controller_polling_enabled`, which defaults to
-`false`. The current PRINT-SERVER local configuration does not enable it. A
-failed preflight creates no execution batch and leaves the request pending.
+The consumer is guarded by `controller_polling_enabled`, which remains `false`
+in the tracked example configuration. Production activation requires the local
+configuration to set it to `true`. A failed preflight creates no execution
+batch and leaves the request pending.
 
-The Controller-capable candidate reports `SERVICE_VERSION = "4.1.0-rc1"` in
-the startup banner and service log. Promotion to `4.1.0` requires successful
-physical, finalization, restart, and no-double-print acceptance.
+The first Controller-capable production candidate reported
+`SERVICE_VERSION = "4.1.0-rc1"`. The spooler-observer correction advances the
+controlled candidate to `4.1.0-rc2`. Promotion to `4.1.0` still requires
+successful automatic finalization, restart, and no-double-print acceptance.
 
 Production Database migration
 `Controllers/Database/025_create_controller_label_print_batches.sql` was
@@ -128,9 +130,28 @@ all 177 Controllers use the 24 mm family, the new batch tables are empty, the
 Controller audit trigger remains enabled, and the required `printservice`
 table, column, and sequence permissions pass.
 
-The Controller consumer is not production-complete until its code is installed,
-the feature is deliberately enabled for a controlled request, and
-request-to-physical-label plus restart/no-double-print behavior are accepted.
+The V4 Scheduled Task and Controller consumer were installed and deliberately
+enabled on PRINT-SERVER on 2026-09-03. The first controlled request produced
+the correct `CTRL:1031` physical label. Phone scanning opened the full URL and
+Controller 1031; Zebra HID returned `CTRL:1031`, appended Enter, and opened the
+same Controller after the tablet scan field was manually focused.
+
+That first physical print also exposed a completion defect. b-PAC returned
+`PrintOut=True`, `EndPrint=True`, and `Close=True`, and the label physically
+printed, but V4 did not begin Windows spooler observation until after all three
+calls. The short one-label spooler row had already cleared, so batch 1 was
+incorrectly marked `FAILED`. The service was stopped and batch 1 was reconciled
+from physical and database evidence without reprinting.
+
+Candidate `4.1.0-rc2` starts a shared high-frequency spooler observer before
+`StartPrint`. It retains every new job ID even if the row clears before the
+main thread reaches its completion check. It still fails when no new job is
+ever observed or when an observed job remains stuck. The correction applies to
+Display, Container, and Controller renderers.
+
+Controller printing is not production-complete until `4.1.0-rc2` is deployed
+and one controlled request proves automatic batch finalization, zero remaining
+requests, restart safety, and no duplicate physical output.
 
 ## Pending-Request Safety Check
 
