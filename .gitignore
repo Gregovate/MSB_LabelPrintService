@@ -9,7 +9,8 @@ logs/
 # Runtime state
 state/
 
-# CSV working files (optional — keep if generated)
+# Runtime CSV exports
+csv/*.csv
 csv/printed/
 
 # Python
@@ -24,3 +25,4 @@ venv/
 # OS junk
 Thumbs.db
 .DS_Store
+config.v4.local.ini

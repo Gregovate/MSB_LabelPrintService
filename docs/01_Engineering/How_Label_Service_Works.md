@@ -198,6 +198,9 @@ Batch items are exported to CSV:
 csv/display_labels.csv
 csv/container_labels.csv
 
+These are transient runtime exports and are intentionally ignored by Git. Durable
+test fixtures belong under the responsible printer template's `csv/` directory.
+
 
 This provides:
 
