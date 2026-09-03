@@ -34,7 +34,7 @@ class ControllerV4ContractTests(unittest.TestCase):
             ):
                 service_versions.append(ast.literal_eval(node.value))
 
-        self.assertEqual(service_versions, ["4.1.0-rc2"])
+        self.assertEqual(service_versions, ["4.1.0-rc3"])
 
     def test_service_source_parses_and_defines_controller_pipeline(self) -> None:
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
@@ -72,22 +72,34 @@ class ControllerV4ContractTests(unittest.TestCase):
         self.assertEqual(set(functions), renderers)
         for name, function_source in functions.items():
             with self.subTest(renderer=name):
-                observer_start = function_source.index(
-                    "spooler_observer.start()"
-                )
+                observer_start = function_source.index("start_print_observers(")
                 bpac_start = function_source.index(
                     'doc.StartPrint("", PRINT_FLAGS)'
                 )
                 completion_wait = function_source.index(
                     "spooler_observer.wait_for_completion()"
                 )
-                observer_stop = function_source.index(
-                    "spooler_observer.stop()"
-                )
+                observer_stop = function_source.index("stop_print_observers(")
 
                 self.assertLess(observer_start, bpac_start)
                 self.assertLess(bpac_start, completion_wait)
                 self.assertLess(completion_wait, observer_stop)
+                self.assertIn("status_sampler=status_sampler", function_source)
+
+    def test_status_sampling_starts_before_spooler_observation(self) -> None:
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        helper_source = next(
+            ast.get_source_segment(source, node) or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "start_print_observers"
+        )
+
+        self.assertLess(
+            helper_source.index("status_sampler.start()"),
+            helper_source.index("spooler_observer.start()"),
+        )
 
     def test_example_config_keeps_controller_polling_off_by_default(self) -> None:
         config = configparser.ConfigParser()
@@ -95,6 +107,13 @@ class ControllerV4ContractTests(unittest.TestCase):
 
         self.assertFalse(
             config.getboolean("features", "controller_polling_enabled")
+        )
+        self.assertTrue(
+            config.getboolean("printing", "status_sampler_enabled")
+        )
+        self.assertEqual(
+            config.getfloat("printing", "status_sample_interval_seconds"),
+            0.25,
         )
         self.assertEqual(
             config["label_family.QR_24MM_HORIZONTAL"]["media_width_mm"],

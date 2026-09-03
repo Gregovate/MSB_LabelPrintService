@@ -5,9 +5,9 @@
 | Document Type | Engineering Test Evidence |
 | System | MSB Label Print Service / PRINT-SERVER |
 | Printers | PT-P950NW and QL-820NWB |
-| Status | CURRENT — recovered operator-supplied bench evidence |
-| Last Reviewed | 2026-09-02 |
-| Controlling Issue | [#14](https://github.com/Gregovate/MSB_LabelPrintService/issues/14) |
+| Status | CURRENT — recovered bench evidence plus active-job capture contract |
+| Last Reviewed | 2026-09-03 |
+| Controlling Issue | [#19](https://github.com/Gregovate/MSB_LabelPrintService/issues/19) |
 
 ## Purpose
 
@@ -71,6 +71,35 @@ Observed: cassette identity remains present; Error Information 1 is `0x02` (end 
 Near the end of a cassette, striped tape passes through the printer before the usable tape is fully exhausted. The printer can read those stripes, but the corresponding Brother status byte/code has not been identified in the existing captures.
 
 The controlled natural-runout test must begin logging before the striped section reaches the sensor and continue through the final `0x02` end-of-media state. Each sample must retain the complete raw 32-byte value and be correlated with precise timestamp, batch/item identity, b-PAC result, and Windows spooler state. Raw changes must be preserved even when the current decoder gives them no name.
+
+### Active-job sampler candidate
+
+V4 `4.1.0-rc3` adds an observation-only PT-P950NW status sampler to every
+Display, Container, and Controller b-PAC job. It starts before `StartPrint`,
+continues while the Windows spooler job is active, and remains active for two
+seconds after the observed job clears. The default interval is 250 ms with an
+unchanged-status heartbeat every five seconds.
+
+The batch log records:
+
+- `BROTHER_STATUS_SAMPLE event=INITIAL` before b-PAC submission;
+- `event=CHANGED` for every raw 32-byte transition;
+- `event=HEARTBEAT` while the packet is unchanged;
+- `event=RECOVERED` after a transient query error;
+- `BROTHER_STATUS_SAMPLE_ERROR` for query failures;
+- `BROTHER_STATUS_SAMPLER_STOP` with sample, change, and error totals plus the
+  final raw value.
+
+Every sample retains width, media type, both error bytes, status type, phase,
+notification byte, decoded known errors, and the complete raw value. The
+sampler does not interpret an unknown byte as low tape, stop submission, clear
+requests, or alter batch state. Its only purpose in this candidate is to
+capture the racing-stripe transition so a later change can be based on physical
+evidence.
+
+When a natural runout produces `event=CHANGED`, preserve the complete batch log
+with the physical last-good/boundary-label observation in this repository and
+Issue #19 before beginning another runout or recovery experiment.
 
 ### No cassette, cover closed
 
@@ -211,5 +240,8 @@ Two operator-labeled P950 tests (cover open and empty 36 mm cassette) accidental
 7. Correlate every status transition with timestamp, batch/item identity, b-PAC return, and Windows spooler state so recovery never guesses whether the boundary label physically printed.
 8. The operator dialog must demonstrably become visible and gain attention. A `PREFLIGHT_DIALOG_OPEN` log entry proves only that code attempted to create it.
 9. Controlled acceptance must cover cassette replacement, Retry/Cancel, restart/resume, and no-double-print behavior before V4 deployment.
+10. Active-job sampling is an evidence mechanism, not an approved automatic
+    stop rule. No changed byte becomes a stop condition until a controlled
+    physical runout proves its meaning and timing.
 
 During later V4 acceptance, a pending 36 mm Container with 24 mm laminated tape returned the same proven 24 mm ready status value. Preflight correctly blocked printing. The operator initially reported no visible dialog and later found it buried behind six windows, confirming the unresolved focus/attention defect.
