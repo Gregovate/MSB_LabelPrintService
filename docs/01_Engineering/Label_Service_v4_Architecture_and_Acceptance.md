@@ -339,6 +339,24 @@ The Beelink does not need to act as a traditional shared Windows print server fo
 
 Windows queue completion is not proof that the physical label printed correctly. It is only evidence that Windows finished processing the job.
 
+The first production Controller label on 2026-09-03 proved that observation
+must begin before b-PAC submission. The one-label job physically printed and
+b-PAC returned success, but the Windows row appeared and cleared before the
+old watcher started after `EndPrint` and `Close`. That late watcher falsely
+marked the batch failed.
+
+V4 `4.1.0-rc2` therefore starts a high-frequency observer before `StartPrint`.
+The observer retains each new job ID across its complete lifetime, including a
+job that clears before the main thread begins its completion wait. Completion
+still requires both of these conditions:
+
+- at least one new Windows spooler job was observed after the clean baseline;
+- every observed new job cleared within the configured completion timeout.
+
+No observed job remains a failure. An observed but stuck job also remains a
+failure. This correction changes observation timing; it does not treat an
+empty queue by itself as proof of printing.
+
 The evidence sources are intentionally separate:
 
 ```text
