@@ -5,6 +5,7 @@ import csv
 import json
 import logging
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,8 @@ import win32print
 import socket
 import os
 
+from brother_status_runtime import query_brother_snmp_status
+from brother_status_sampler_runtime import BrotherStatusSampler
 from v4_preflight_runtime import (
     run_operator_preflight_loop,
     snmp_family_preflight,
@@ -75,6 +78,13 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-09-03 — v4.1.0-rc3
+#   • INSTRUMENTATION: Sample raw Brother status throughout active print jobs
+#       - Requires an initial sample before b-PAC submission
+#       - Logs every raw-packet change and periodic unchanged heartbeats
+#       - Continues briefly after the observed spooler job clears
+#       - Observation only; no unknown status byte can stop printing
+#
 ## 2026-09-03 — v4.1.0-rc2
 #   • FIX: Observe Windows spooler jobs before b-PAC submission
 #       - Prevents a fast one-label job from clearing before observation begins
@@ -194,7 +204,7 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc2"
+SERVICE_VERSION = "4.1.0-rc3"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -241,6 +251,7 @@ CSV_DIR.mkdir(parents=True, exist_ok=True)
 
 LOCK_FILE = STATE_DIR / "print_service.lock"
 LOG_FILE = LOG_DIR / "label_service.log"
+BATCH_LOG_LOCK = threading.Lock()
 
 POLL_SECONDS = int(CONFIG["service"]["poll_seconds"])
 STARTED_BY_PERSON_ID = int(CONFIG["service"]["started_by_person_id"])
@@ -271,6 +282,33 @@ SNMP_TIMEOUT_SECONDS = CONFIG.getfloat(
     "snmp_timeout_seconds",
     fallback=3.0,
 )
+STATUS_SAMPLER_ENABLED = CONFIG.getboolean(
+    "printing",
+    "status_sampler_enabled",
+    fallback=True,
+)
+STATUS_SAMPLE_INTERVAL_SECONDS = CONFIG.getfloat(
+    "printing",
+    "status_sample_interval_seconds",
+    fallback=0.25,
+)
+STATUS_HEARTBEAT_SECONDS = CONFIG.getfloat(
+    "printing",
+    "status_heartbeat_seconds",
+    fallback=5.0,
+)
+STATUS_POST_SPOOLER_SECONDS = CONFIG.getfloat(
+    "printing",
+    "status_post_spooler_seconds",
+    fallback=2.0,
+)
+
+if STATUS_SAMPLE_INTERVAL_SECONDS <= 0:
+    raise RuntimeError("status_sample_interval_seconds must be greater than zero")
+if STATUS_HEARTBEAT_SECONDS <= 0:
+    raise RuntimeError("status_heartbeat_seconds must be greater than zero")
+if STATUS_POST_SPOOLER_SECONDS < 0:
+    raise RuntimeError("status_post_spooler_seconds cannot be negative")
 
 DISPLAY_CSV = Path(CONFIG["csv_files"]["display"])
 CONTAINER_VERTICAL_CSV = Path(CONFIG["csv_files"]["container_vertical"])
@@ -918,8 +956,9 @@ def printer_preflight(
 
 def write_batch_log(batch_log_path: Path, message: str) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with batch_log_path.open("a", encoding="utf-8") as f:
-        f.write(f"{timestamp} | {message}\n")
+    with BATCH_LOG_LOCK:
+        with batch_log_path.open("a", encoding="utf-8") as f:
+            f.write(f"{timestamp} | {message}\n")
 
 
 def new_batch_log_path(batch_type: str, batch_id: int) -> Path:
@@ -1788,6 +1827,99 @@ def create_spooler_job_observer(
         log_message=lambda message: write_batch_log(batch_log_path, message),
     )
 
+
+def create_brother_status_sampler(
+    *,
+    family: dict[str, Any],
+    batch_log_path: Path,
+    context: str,
+) -> BrotherStatusSampler | None:
+    """Build the observation-only PT-P950NW status sampler."""
+    if not STATUS_SAMPLER_ENABLED:
+        write_batch_log(
+            batch_log_path,
+            f"BROTHER_STATUS_SAMPLER_DISABLED context='{context}'",
+        )
+        return None
+
+    if family["printer_key"] != "pt_p950nw":
+        write_batch_log(
+            batch_log_path,
+            "BROTHER_STATUS_SAMPLER_UNSUPPORTED "
+            f"context='{context}' printer_key='{family['printer_key']}'",
+        )
+        return None
+
+    printer = family["printer"]
+    return BrotherStatusSampler(
+        context=context,
+        read_status=lambda: query_brother_snmp_status(
+            host=printer["host"],
+            oid=SNMP_OID,
+            community=SNMP_COMMUNITY,
+            port=SNMP_PORT,
+            timeout=SNMP_TIMEOUT_SECONDS,
+        ),
+        log_message=lambda message: write_batch_log(batch_log_path, message),
+        poll_interval_seconds=STATUS_SAMPLE_INTERVAL_SECONDS,
+        heartbeat_seconds=STATUS_HEARTBEAT_SECONDS,
+        startup_timeout_seconds=SNMP_TIMEOUT_SECONDS + 2.0,
+        stop_timeout_seconds=SNMP_TIMEOUT_SECONDS + 2.0,
+    )
+
+
+def start_print_observers(
+    *,
+    family: dict[str, Any],
+    printer_name: str,
+    known_job_ids: set[int],
+    expected_document: str,
+    batch_log_path: Path,
+    context: str,
+) -> tuple[SpoolerJobObserver, BrotherStatusSampler | None]:
+    """Start status and spooler observation before b-PAC submission."""
+    status_sampler = create_brother_status_sampler(
+        family=family,
+        batch_log_path=batch_log_path,
+        context=context,
+    )
+    spooler_observer = create_spooler_job_observer(
+        printer_name=printer_name,
+        known_job_ids=known_job_ids,
+        expected_document=expected_document,
+        batch_log_path=batch_log_path,
+    )
+
+    if status_sampler is not None:
+        status_sampler.start()
+
+    try:
+        spooler_observer.start()
+    except Exception:
+        if status_sampler is not None:
+            status_sampler.stop()
+        raise
+
+    return spooler_observer, status_sampler
+
+
+def stop_print_observers(
+    *,
+    spooler_observer: SpoolerJobObserver,
+    status_sampler: BrotherStatusSampler | None,
+    spooler_completed: bool,
+) -> None:
+    """Stop both observers while preserving a post-spooler status window."""
+    spooler_observer.stop()
+    if status_sampler is not None:
+        status_sampler.stop(
+            post_observation_seconds=(
+                STATUS_POST_SPOOLER_SECONDS
+                if spooler_completed
+                else 0.0
+            )
+        )
+
 # ============================================================
 # DISPLAY PRINTING
 # ============================================================
@@ -1883,13 +2015,18 @@ def print_display_rows_with_template(
         f"qr={DISPLAY_OBJ_QR}",
     )
 
-    spooler_observer = create_spooler_job_observer(
+    spooler_observer, status_sampler = start_print_observers(
+        family=family,
         printer_name=printer_name,
         known_job_ids=baseline_job_ids,
         expected_document=template_path.stem,
         batch_log_path=batch_log_path,
+        context=(
+            f"Display family={family['code']} variant={variant} "
+            f"labels={len(rows)}"
+        ),
     )
-    spooler_observer.start()
+    spooler_completed = False
 
     try:
         doc.StartPrint("", PRINT_FLAGS)
@@ -1923,8 +2060,13 @@ def print_display_rows_with_template(
 
         finish_bpac_document(doc, batch_log_path)
         spooler_observer.wait_for_completion()
+        spooler_completed = True
     finally:
-        spooler_observer.stop()
+        stop_print_observers(
+            spooler_observer=spooler_observer,
+            status_sampler=status_sampler,
+            spooler_completed=spooler_completed,
+        )
 
 
 def print_display_batch(
@@ -2104,13 +2246,19 @@ def print_container_batch(
         f"qr={CONTAINER_OBJ_QR}",
     )
 
-    spooler_observer = create_spooler_job_observer(
+    spooler_observer, status_sampler = start_print_observers(
+        family=family,
         printer_name=printer_name,
         known_job_ids=baseline_job_ids,
         expected_document=template_path.stem,
         batch_log_path=batch_log_path,
+        context=(
+            f"Container family={family_code} "
+            f"orientation={normalized_orientation} "
+            f"labels={len(rows_to_print)}"
+        ),
     )
-    spooler_observer.start()
+    spooler_completed = False
 
     try:
         doc.StartPrint("", PRINT_FLAGS)
@@ -2140,8 +2288,13 @@ def print_container_batch(
 
         finish_bpac_document(doc, batch_log_path)
         spooler_observer.wait_for_completion()
+        spooler_completed = True
     finally:
-        spooler_observer.stop()
+        stop_print_observers(
+            spooler_observer=spooler_observer,
+            status_sampler=status_sampler,
+            spooler_completed=spooler_completed,
+        )
 
 
 # ============================================================
@@ -2209,13 +2362,15 @@ def print_controller_batch(
         f"qr={CONTROLLER_OBJ_QR}",
     )
 
-    spooler_observer = create_spooler_job_observer(
+    spooler_observer, status_sampler = start_print_observers(
+        family=family,
         printer_name=printer_name,
         known_job_ids=baseline_job_ids,
         expected_document=template_path.stem,
         batch_log_path=batch_log_path,
+        context=f"Controller family={family['code']} labels={len(rows)}",
     )
-    spooler_observer.start()
+    spooler_completed = False
 
     try:
         doc.StartPrint("", PRINT_FLAGS)
@@ -2243,8 +2398,13 @@ def print_controller_batch(
 
         finish_bpac_document(doc, batch_log_path)
         spooler_observer.wait_for_completion()
+        spooler_completed = True
     finally:
-        spooler_observer.stop()
+        stop_print_observers(
+            spooler_observer=spooler_observer,
+            status_sampler=status_sampler,
+            spooler_completed=spooler_completed,
+        )
 
 
 # ============================================================

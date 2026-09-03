@@ -6,7 +6,7 @@
 | System | MSB Label Print Service / PRINT-SERVER |
 | Branch | `main` plus scoped follow-up branches |
 | Baseline Issue | LabelPrintService #14 — closed after V4 deployment/merge |
-| Active Controller Issue | LabelPrintService #18 |
+| Active Safety Issues | LabelPrintService #19 (low tape) and #21 (operator warning) |
 | Last Updated | 2026-09-03 |
 | Production Baseline | V4 is the controlled Scheduled Task worker; `label_poll_service_v3.py` v3.4 remains the preserved rollback path |
 
@@ -53,7 +53,7 @@ FieldWiring may request plug/output labels from approved wiring data. It must no
 
 As of 2026-09-03:
 
-- `label_poll_service_v4.py` is the active controlled `MSB Label Service` Scheduled Task worker for existing Display and Container polling;
+- `label_poll_service_v4.py` is the active controlled `MSB Label Service` Scheduled Task worker for Display, Container, and Controller polling;
 - the task runs as `Print Service` with `LogonType: Password` and `RunLevel: Highest`;
 - `config.v4.local.ini` is the active local V4 configuration and remains Git-ignored;
 - `label_poll_service_v3.py` v3.4 and `config.local.ini` remain the known rollback implementation/configuration;
@@ -61,7 +61,11 @@ As of 2026-09-03:
 - V3 and V4 must never run concurrently;
 - obsolete root-level/legacy `.lbx` files remain in place until V4 acceptance and rollback verification are complete.
 
-The controlled cutover proves Scheduled Task startup and idle polling. Physical Display/Container printing from the task context, unattended reboot recovery, and the rollback exercise remain acceptance items. See [V4 Controlled Production Deployment and Queue Plan](V4_Controlled_Deployment_and_Queue_Plan_2026-09-03.md).
+The controlled deployment proves Scheduled Task startup, unattended reboot,
+Controller polling, one-label and 13-label Controller batches, automatic
+finalization, and no duplicate output. The rollback exercise and remaining
+cross-family/tape-out safety work remain acceptance items. See
+[V4 Controlled Production Deployment and Queue Plan](V4_Controlled_Deployment_and_Queue_Plan_2026-09-03.md).
 
 ## Physical Template Organization
 
@@ -500,6 +504,32 @@ Immediately around each physical `PrintOut()` attempt, log enough context to ide
 
 For Wiring also log `objChannel`, `objLine1`, and `objLine2`.
 
+### Observation-only active-job capture
+
+Candidate `4.1.0-rc3` starts a shared PT-P950NW status sampler before b-PAC
+submission for every Display, Container, and Controller renderer. It samples
+through the active spooler window and for a short interval after the observed
+job clears. The tracked defaults are:
+
+```ini
+status_sampler_enabled = true
+status_sample_interval_seconds = 0.25
+status_heartbeat_seconds = 5.0
+status_post_spooler_seconds = 2.0
+```
+
+Batch logs retain the initial packet, every raw transition, periodic unchanged
+heartbeats, transient query errors/recovery, and a final sample summary. The
+existing per-label b-PAC queue messages in the same log provide asset IDs and
+submission timestamps for correlation.
+
+This is evidence collection only. The current renderer may submit several
+`PrintOut()` calls before the physical spooler job finishes, so `4.1.0-rc3`
+does not claim that it can stop unsent labels at the warning boundary. No raw
+change or unknown notification byte controls printing until the natural-runout
+test proves a stable warning signature and its timing relative to the physical
+labels.
+
 ### Tape-out dialog
 
 When the fully exhausted `error1=0x02` state is detected during an active batch, v4 must stop blindly advancing and show a visible dialog such as:
@@ -645,7 +675,11 @@ NO manual DB cleanup
 
 ### Tape-out instrumentation
 
-Before production rollout, per-label and short-interval diagnostic logging must be present so the striped low-tape transition and final exhaustion can be correlated with the physical label reported by staff. The raw 32-byte status must be retained even when a changed byte is not decoded yet.
+Candidate `4.1.0-rc3` supplies the required short-interval active-job sampler
+for Display, Container, and Controller jobs. Its controlled production
+deployment must prove that initial/change/heartbeat/post-spooler records are
+written to the batch log before the next natural runout. The raw 32-byte status
+must be retained even when a changed byte is not decoded yet.
 
 Application-level boundary-label reprint remains unapproved until real evidence is obtained.
 
@@ -731,13 +765,13 @@ state change on every failed preflight.
 
 Remaining separately tracked work after the V4 baseline merge:
 
-- production Controller permanent-ID consumer using the deployed request command and CTRL scan route;
 - production Location/rack Code 128 request-to-print support on the QL-820NWB;
 - visible foreground operator alerts;
-- active-print striped low-tape transition plus final-exhaustion/spooler/boundary-label instrumentation and controlled recovery;
+- active-print striped low-tape transition capture using the `4.1.0-rc3`
+  sampler, followed by evidence-based stop-before-next-label behavior;
 - restart/resume and no-double-print acceptance;
 - final Display and Container regression acceptance;
-- scheduled-task physical-print, unattended reboot, and V3.4 rollback acceptance.
+- V3.4 rollback acceptance.
 
 Tracked separately but not implemented by inventing a second printer stack here:
 

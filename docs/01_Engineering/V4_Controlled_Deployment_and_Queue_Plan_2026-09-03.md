@@ -40,7 +40,10 @@ Startup evidence:
 - pending workload at cutover: zero Displays and zero Containers;
 - V3 task XML preserved at `C:\MSB_LabelService\state\MSB_Label_Service_v3_task_20260902.xml`.
 
-This checkpoint proves Scheduled Task startup and database polling. It does not yet prove a physical Display/Container print from the Scheduled Task context or unattended reboot recovery.
+Later 2026-09-03 acceptance proved unattended reboot recovery and production
+Controller polling. Candidate `4.1.0-rc2` automatically completed a one-label
+batch and, after an offline request buildup, one 13-label batch with 13/13
+items, zero pending requests, zero failed batches, and no duplicate output.
 
 ## Polling and Scheduling Contract
 
@@ -114,7 +117,18 @@ The controlled investigation must:
 
 If a reliable warning exists, production must stop before submitting the next label and leave remaining requests pending.
 
-The existing V4 loop currently submits multiple `PrintOut()` calls before waiting for the spooler. Merely inserting immediate status queries into that tight loop may capture submission timing rather than physical tape advancement. Per-label serialization must therefore be proven during the controlled test.
+Candidate `4.1.0-rc3` adds an observation-only 250 ms PT-P950NW sampler around
+every Display, Container, and Controller active spooler job. It records the
+initial raw packet, every change, five-second heartbeats, query errors/recovery,
+and a two-second post-spooler window in the batch log. This closes the missing
+evidence-capture gap before the next natural runout.
+
+The existing V4 loop still submits multiple `PrintOut()` calls before waiting
+for the spooler. The sampler may therefore capture physical tape advancement
+without proving which already-submitted label can still be stopped. Per-label
+serialization or another submission checkpoint must be proven after the
+warning signature is identified. `4.1.0-rc3` does not automatically stop on an
+unknown changed byte.
 
 An unresolved/recovery-required batch remains only the safety fallback for an unexpected mid-label failure or if Brother exposes no usable advance warning. The system must never guess which boundary label physically printed or blindly resend the whole batch.
 
@@ -124,11 +138,15 @@ An unresolved/recovery-required batch remains only the safety fallback for an un
 |---|---|---|
 | Display | `ref.display.print_label` | V4 implemented |
 | Container | `ref.container.print_label` | V4 implemented |
-| Controller | `ref.request_controller_label(p_email, p_controller_id)` sets `ref.controller.print_label` | request/route and database batch schema deployed; gated V4 consumer disabled pending physical acceptance |
+| Controller | `ref.request_controller_label(p_email, p_controller_id)` sets `ref.controller.print_label` | request, route, batch schema, V4 consumer, physical print, scan, restart, and 13-label offline recovery accepted |
 | Location | governed request on `ref.storage_location` | request field/command and V4 consumer missing |
 | Wiring | purpose-built operational request queue | physical format approved; request workflow and V4 consumer missing |
 
-The Controller request, scan, and database batch contracts are authoritative and deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). PR #22 implements the Controller poll/snapshot/render/finalization path behind a feature flag that defaults to off. Production activation still requires consumer installation, an immediate pending-request check, and controlled physical/restart/no-double-print acceptance.
+The Controller request, scan, database batch, and physical print contracts are
+authoritative, deployed, and accepted; see [Controller Label Request and
+Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md).
+The tracked example keeps the feature flag off for safe first installation,
+while production `config.v4.local.ini` explicitly enables Controller polling.
 
 Location and Wiring still require governed request contracts as well as their service consumers. The 12 mm fold-over Wiring physical format and direct b-PAC print path are approved; this approval does not create the missing request/polling pipeline.
 
@@ -138,12 +156,11 @@ The FieldWiring application owns creating Wiring requests. LabelPrintService own
 
 - continued Display and Container production regression monitoring;
 - V3.4 rollback exercise;
-- unattended reboot and V4 restart verification;
-- Controller request-to-print pipeline;
 - Location request-to-print pipeline;
 - Wiring request-to-print pipeline using the approved 12 mm fold-over format;
 - print-job dashboard;
-- low-tape/end-marker capture;
+- deploy and verify `4.1.0-rc3` active-job status capture;
+- low-tape/end-marker capture during the next natural runout;
 - safe stop-before-next-label behavior if a warning signature is found;
 - Display/Container regressions after shared scheduler changes.
 

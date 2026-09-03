@@ -61,3 +61,12 @@ Do not infer that an empty cassette is equivalent to no cassette. The purpose of
 The Windows Print Spooler may remain running. During initial direct-printer diagnostics, keep the production Python polling service stopped so the test evidence is isolated from production activity.
 
 Do not add print commands to the status probe. Any future direct-print experiment must be a separate explicitly named test program with its own safety documentation.
+
+## Production active-job observation
+
+V4 `4.1.0-rc3` uses `brother_status_sampler_runtime.py` to query the Brother
+SNMP status OID throughout active PT-P950NW Display, Container, and Controller
+jobs. That production observer writes to the correlated batch log; it is not a
+replacement for this isolated direct-status diagnostic harness. Its current
+role is evidence capture only for the unidentified low-tape racing-stripe
+transition. It does not interpret unknown bytes or stop printing.

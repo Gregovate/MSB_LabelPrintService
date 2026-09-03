@@ -4,11 +4,12 @@
 |---|---|
 | Document Type | Cross-repository integration contract |
 | System | MSB Production Database / Controller Inventory / LabelPrintService |
-| Status | PHYSICAL FORMAT AND SCAN ACCEPTED — spooler-observer hotfix awaiting deployment acceptance |
+| Status | ACCEPTED AND DEPLOYED — shared PT status instrumentation remains RC |
 | Effective Date | 2026-09-03 |
 | Controlling Issue | [LabelPrintService #18](https://github.com/Gregovate/MSB_LabelPrintService/issues/18) |
 | Pull Requests | [LabelPrintService #22](https://github.com/Gregovate/MSB_LabelPrintService/pull/22), [#23](https://github.com/Gregovate/MSB_LabelPrintService/pull/23) |
-| Controlled Candidate Version | `4.1.0-rc2` |
+| Accepted Controller Version | `4.1.0-rc2` |
+| Current Shared Candidate | `4.1.0-rc3` |
 
 ## Purpose
 
@@ -149,9 +150,24 @@ main thread reaches its completion check. It still fails when no new job is
 ever observed or when an observed job remains stuck. The correction applies to
 Display, Container, and Controller renderers.
 
-Controller printing is not production-complete until `4.1.0-rc2` is deployed
-and one controlled request proves automatic batch finalization, zero remaining
-requests, restart safety, and no duplicate physical output.
+Candidate `4.1.0-rc2` was deployed and accepted. A controlled single-label
+request for Controller 1032 automatically finalized batch 2, cleared the exact
+request, updated print history, and did not reprint after a service restart.
+An unattended reboot returned the Scheduled Task to service, after which five
+individually requested Controller labels printed successfully. A later offline
+queue test preserved 13 requests while PRINT-SERVER was stopped; after startup,
+one 13-row batch printed all 13 physical labels, finalized 13/13 items, and left
+zero pending requests and zero failed batches.
+
+Controller phone and Zebra HID scans were also accepted. The phone followed the
+full URL to the correct Controller; Zebra ADF returned `CTRL:<id>` plus Enter and
+opened the same Controller when the tablet scan field had focus. Tablet
+scan-field autofocus is an application UI concern, not a label payload defect.
+
+Shared candidate `4.1.0-rc3` adds observation-only PT-P950NW status sampling to
+Controller, Display, and Container jobs. It does not change the accepted
+Controller payload, rendering, snapshot, or finalization contract and it is not
+an automatic low-tape stop rule.
 
 ## Pending-Request Safety Check
 
@@ -172,4 +188,6 @@ poller cannot unexpectedly print an old request.
 
 ## Completion Boundary
 
-The Controller feature is not complete merely because the button queues the flag. It is complete only after the LabelPrintService consumer is implemented and the full request-to-physical-label path is accepted without premature database mutation or duplicate printing.
+The Controller request-to-physical-label path is accepted and deployed. Whole
+service promotion beyond the release-candidate series remains blocked by the
+separate low-tape/racing-stripe and durable operator-warning workstreams.
