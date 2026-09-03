@@ -4,7 +4,7 @@
 |---|---|
 | Document Type | Engineering Test Evidence |
 | System | MSB Label Print Service / FieldWiring |
-| Status | CURRENT — recovered from the 2026-09-01 sizing session |
+| Status | APPROVED — 12 mm fold-over physical format and direct b-PAC print path |
 | Controlling Issue | LabelPrintService #14 |
 | Source View | `lor_snap.preview_wiring_fieldlead_v6` |
 
@@ -21,6 +21,35 @@ objLine2         / objLine2_right         <- split installer-facing line 2
 ```
 
 The right-side names are template bindings. They receive the same three logical values as the left side.
+
+## Physical Approval — 2026-09-02
+
+The fold-over label format is approved for production implementation.
+
+Accepted physical fixture:
+
+```text
+objChannel / objChannel_right = 08
+objLine1 / objLine1_right     = UncleLouis Standing
+objLine2 / objLine2_right     = Pants Master Prop
+```
+
+Acceptance evidence proves:
+
+- the PT-P950NW preflight detected 12 mm laminated tape;
+- all six unique b-PAC objects received the intended values;
+- the left and right halves matched;
+- the center fold area did not overlap after the cosmetic template adjustment;
+- exactly one label was submitted and printed;
+- b-PAC `SetPrinter`, `StartPrint`, `PrintOut`, `EndPrint`, and `Close` completed successfully.
+
+The approved template is:
+
+```text
+templates/pt_p950nw/wiring_label_2_line_horz_12mm_double_sided.lbx
+```
+
+Approval covers the physical layout, six-object assignment contract, 12 mm media gate, and direct print path. It does **not** claim that the governed FieldWiring request schema, polling query, execution batch, finalizer, or restart/no-double-print workflow exists. Those remain implementation work.
 
 ## Source Query
 
@@ -129,6 +158,6 @@ The split fixture is physical-design evidence, not yet the governed production t
 
 ## Acceptance Use
 
-The export and physical Wiring probes read this tracked CSV directly. Fixture row 1 is the default because it derives from the longest raw production name in the recovered result. Other rows can be selected with `--fixture-row N`.
+The export and physical Wiring probes read this tracked CSV directly. Fixture row 1 is the accepted physical-format fixture because it derives from the longest raw production name in the recovered result. Other rows can be selected with `--fixture-row N` for regression checks.
 
 Do not replace these values with invented stress-test strings. Add new production-derived fixtures here when a newly observed value exceeds the current field-length or layout envelope.
