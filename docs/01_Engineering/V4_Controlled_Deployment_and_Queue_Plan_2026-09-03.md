@@ -124,11 +124,13 @@ An unresolved/recovery-required batch remains only the safety fallback for an un
 |---|---|---|
 | Display | `ref.display.print_label` | V4 implemented |
 | Container | `ref.container.print_label` | V4 implemented |
-| Controller | `ref.controller.print_label` | request exists; V4 consumer missing |
-| Location | governed request on `ref.storage_location` | request field and V4 consumer missing |
-| Wiring | purpose-built operational request queue | request workflow and V4 consumer missing |
+| Controller | `ref.request_controller_label(p_email, p_controller_id)` sets `ref.controller.print_label` | governed request and CTRL scan route deployed; V4 consumer missing |
+| Location | governed request on `ref.storage_location` | request field/command and V4 consumer missing |
+| Wiring | purpose-built operational request queue | physical format approved; request workflow and V4 consumer missing |
 
-Controller, Location, and Wiring each require a governed request contract, immutable batch snapshot, renderer, targeted finalization, audit evidence, and no-double-print behavior.
+The Controller request and scan contracts are authoritative and deployed; see [Controller Label Request and Physical Format Contract](Controller_Label_Request_and_Physical_Format_Contract_2026-09-03.md). Controller still requires its LabelPrintService immutable snapshot/batch, renderer, targeted finalization, audit evidence, and no-double-print behavior.
+
+Location and Wiring still require governed request contracts as well as their service consumers. The 12 mm fold-over Wiring physical format and direct b-PAC print path are approved; this approval does not create the missing request/polling pipeline.
 
 The FieldWiring application owns creating Wiring requests. LabelPrintService owns consuming them and all Brother printer interaction.
 
@@ -140,7 +142,7 @@ The FieldWiring application owns creating Wiring requests. LabelPrintService own
 - unattended reboot and V4 restart verification;
 - Controller request-to-print pipeline;
 - Location request-to-print pipeline;
-- Wiring request-to-print pipeline;
+- Wiring request-to-print pipeline using the approved 12 mm fold-over format;
 - print-job dashboard;
 - low-tape/end-marker capture;
 - safe stop-before-next-label behavior if a warning signature is found;
