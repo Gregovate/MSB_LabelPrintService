@@ -1,5 +1,7 @@
 # MSB Label Print Service — Engineering Documentation
 
+- [V4 Controlled Production Deployment and Queue Plan — 2026-09-03](V4_Controlled_Deployment_and_Queue_Plan_2026-09-03.md) — active cutover evidence, silent polling/job-table contract, missing request pipelines, and low-tape investigation.
+
 | Document Control | Value |
 |---|---|
 | Document Type | README / Engineering Documentation Portal |
