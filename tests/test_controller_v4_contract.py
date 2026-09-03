@@ -20,6 +20,22 @@ SQL_DIR = ROOT / "sql"
 
 
 class ControllerV4ContractTests(unittest.TestCase):
+    def test_controller_candidate_has_distinct_service_version(self) -> None:
+        tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
+        service_versions = []
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if any(
+                isinstance(target, ast.Name)
+                and target.id == "SERVICE_VERSION"
+                for target in node.targets
+            ):
+                service_versions.append(ast.literal_eval(node.value))
+
+        self.assertEqual(service_versions, ["4.1.0-rc1"])
+
     def test_service_source_parses_and_defines_controller_pipeline(self) -> None:
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
         function_names = {
