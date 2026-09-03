@@ -8,6 +8,7 @@
 | Effective Date | 2026-09-03 |
 | Controlling Issue | [LabelPrintService #18](https://github.com/Gregovate/MSB_LabelPrintService/issues/18) |
 | Pull Request | [LabelPrintService #22](https://github.com/Gregovate/MSB_LabelPrintService/pull/22) |
+| Controlled Candidate Version | `4.1.0-rc1` |
 
 ## Purpose
 
@@ -114,6 +115,10 @@ sql/controller_finalized.sql
 The consumer is guarded by `controller_polling_enabled`, which defaults to
 `false`. The current PRINT-SERVER local configuration does not enable it. A
 failed preflight creates no execution batch and leaves the request pending.
+
+The Controller-capable candidate reports `SERVICE_VERSION = "4.1.0-rc1"` in
+the startup banner and service log. Promotion to `4.1.0` requires successful
+physical, finalization, restart, and no-double-print acceptance.
 
 Production Database migration
 `Controllers/Database/025_create_controller_label_print_batches.sql` was

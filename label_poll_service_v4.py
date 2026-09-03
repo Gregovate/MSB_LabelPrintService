@@ -26,7 +26,7 @@ from v4_preflight_runtime import (
 # ============================================================
 # ============================================================
 # MSB Label Polling Service
-# label_poll_service_v3.py
+# label_poll_service_v4.py
 #
 # Purpose:
 #   Poll ref.display / ref.container and, when explicitly enabled,
@@ -72,6 +72,19 @@ from v4_preflight_runtime import (
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-09-03 — v4.1.0-rc1
+#   • FEATURE: Added gated permanent Controller ID label consumption
+#       - Polls ref.controller.print_label only when explicitly enabled
+#       - Requires the QR_24MM_HORIZONTAL family and 24 mm laminated tape
+#       - Freezes exact Controller rows into immutable execution batches
+#       - Prints CTRL:<controller_id> plus the full phone-compatible CTRL URL
+#       - Finalizes only Controllers contained in the completed batch
+#
+#   • SAFETY: Controller polling remains disabled by source/config default
+#       - Production activation requires an explicit local feature setting
+#       - Failed preflight creates no batch and leaves requests pending
+#       - Failed physical batches remain visible and block automatic replay
+#
 ## 2026-04-16 — v3.4
 #   • IMPROVEMENT: Added rotating main service log
 #       - Replaced basicConfig-only file logging with RotatingFileHandler
@@ -171,7 +184,7 @@ from v4_preflight_runtime import (
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.0-dev"
+SERVICE_VERSION = "4.1.0-rc1"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
