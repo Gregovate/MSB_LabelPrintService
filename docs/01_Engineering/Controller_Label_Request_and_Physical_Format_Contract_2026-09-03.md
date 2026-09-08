@@ -9,7 +9,7 @@
 | Controlling Issue | [LabelPrintService #18](https://github.com/Gregovate/MSB_LabelPrintService/issues/18) |
 | Pull Requests | [LabelPrintService #22](https://github.com/Gregovate/MSB_LabelPrintService/pull/22), [#23](https://github.com/Gregovate/MSB_LabelPrintService/pull/23) |
 | Accepted Controller Version | `4.1.0-rc2` |
-| Current Shared Candidate | `4.1.0-rc3` |
+| Current Shared Candidate | `4.1.0-rc4` |
 
 ## Purpose
 
@@ -164,10 +164,12 @@ full URL to the correct Controller; Zebra ADF returned `CTRL:<id>` plus Enter an
 opened the same Controller when the tablet scan field had focus. Tablet
 scan-field autofocus is an application UI concern, not a label payload defect.
 
-Shared candidate `4.1.0-rc3` adds observation-only PT-P950NW status sampling to
+Shared candidate `4.1.0-rc3` added observation-only PT-P950NW status sampling to
 Controller, Display, and Container jobs. It does not change the accepted
 Controller payload, rendering, snapshot, or finalization contract and it is not
-an automatic low-tape stop rule.
+an automatic low-tape stop rule. Candidate `4.1.0-rc4` extends sampling through
+Brother physical idle or a reported terminal error and adds automatic preflight
+media recovery without changing that governed Controller contract.
 
 ## Pending-Request Safety Check
 

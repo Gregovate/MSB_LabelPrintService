@@ -21,7 +21,8 @@ import os
 from brother_status_runtime import query_brother_snmp_status
 from brother_status_sampler_runtime import BrotherStatusSampler
 from v4_preflight_runtime import (
-    run_operator_preflight_loop,
+    AutomaticPreflightRecovery,
+    send_preflight_operator_notice,
     snmp_family_preflight,
     validate_runtime_prerequisites,
 )
@@ -78,6 +79,18 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-09-08 — v4.1.0-rc4
+#   • FIX: Recover automatically from preflight printer/media conditions
+#       - Removes the blocking Session 0 Retry/Cancel dialog dependency
+#       - Rechecks pending work on every normal service poll
+#       - Sends a non-blocking warning to the active Windows console session
+#       - Resumes automatically after correct media is installed
+#
+#   • FIX: Observe Brother status through physical completion
+#       - Does not stop on a fixed delay after the Windows spooler clears
+#       - Waits for ready/idle, end-of-media, another reported error, or timeout
+#       - Prevents a new batch while Brother still reports an active phase
+#
 ## 2026-09-03 — v4.1.0-rc3
 #   • INSTRUMENTATION: Sample raw Brother status throughout active print jobs
 #       - Requires an initial sample before b-PAC submission
@@ -204,7 +217,7 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc3"
+SERVICE_VERSION = "4.1.0-rc4"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -297,18 +310,29 @@ STATUS_HEARTBEAT_SECONDS = CONFIG.getfloat(
     "status_heartbeat_seconds",
     fallback=5.0,
 )
-STATUS_POST_SPOOLER_SECONDS = CONFIG.getfloat(
+STATUS_PHYSICAL_COMPLETION_TIMEOUT_SECONDS = CONFIG.getfloat(
     "printing",
-    "status_post_spooler_seconds",
-    fallback=2.0,
+    "status_physical_completion_timeout_seconds",
+    fallback=90.0,
+)
+STATUS_PHYSICAL_IDLE_STABLE_SECONDS = CONFIG.getfloat(
+    "printing",
+    "status_physical_idle_stable_seconds",
+    fallback=1.0,
 )
 
 if STATUS_SAMPLE_INTERVAL_SECONDS <= 0:
     raise RuntimeError("status_sample_interval_seconds must be greater than zero")
 if STATUS_HEARTBEAT_SECONDS <= 0:
     raise RuntimeError("status_heartbeat_seconds must be greater than zero")
-if STATUS_POST_SPOOLER_SECONDS < 0:
-    raise RuntimeError("status_post_spooler_seconds cannot be negative")
+if STATUS_PHYSICAL_COMPLETION_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError(
+        "status_physical_completion_timeout_seconds must be greater than zero"
+    )
+if STATUS_PHYSICAL_IDLE_STABLE_SECONDS < 0:
+    raise RuntimeError(
+        "status_physical_idle_stable_seconds cannot be negative"
+    )
 
 DISPLAY_CSV = Path(CONFIG["csv_files"]["display"])
 CONTAINER_VERTICAL_CSV = Path(CONFIG["csv_files"]["container_vertical"])
@@ -751,6 +775,7 @@ def run_selected_workload_preflight(
     template_specs: list[tuple[Path, tuple[str, ...]]],
     sql_filenames: tuple[str, ...],
     csv_paths: tuple[Path, ...],
+    recovery: AutomaticPreflightRecovery,
 ) -> bool:
     """
     Run the complete deterministic v4 pre-batch gate for one selected
@@ -825,7 +850,7 @@ def run_selected_workload_preflight(
             return False, (
                 f"Printer queue '{printer_name}' is not empty: "
                 f"{summarize_print_jobs(queue_jobs)}. "
-                "Resolve the queue safely, then press Retry."
+                "Resolve the queue safely; the service will retry automatically."
             )
 
         return True, (
@@ -833,7 +858,7 @@ def run_selected_workload_preflight(
             f"{family['code']} on '{printer_name}'."
         )
 
-    return run_operator_preflight_loop(
+    return recovery.check_once(
         workload_name=workload_name,
         check_once=check_once,
     )
@@ -862,9 +887,9 @@ def printer_preflight(
     Validate the selected physical template and Windows printer before
     any PostgreSQL execution-batch state is created.
 
-    Brother SNMP status hardening and Retry/Cancel dialogs are added in
-    the next v4 preflight checkpoint; this function preserves the
-    existing b-PAC media check while making it family/template-specific.
+    Brother SNMP status is the physical media authority. This function
+    preserves the existing b-PAC media check while making it
+    family/template-specific.
     """
     doc = None
 
@@ -1907,18 +1932,63 @@ def stop_print_observers(
     *,
     spooler_observer: SpoolerJobObserver,
     status_sampler: BrotherStatusSampler | None,
-    spooler_completed: bool,
 ) -> None:
-    """Stop both observers while preserving a post-spooler status window."""
+    """Stop both observers after completion or failure handling."""
     spooler_observer.stop()
     if status_sampler is not None:
-        status_sampler.stop(
-            post_observation_seconds=(
-                STATUS_POST_SPOOLER_SECONDS
-                if spooler_completed
-                else 0.0
-            )
+        status_sampler.stop()
+
+
+def wait_for_brother_physical_completion(
+    *,
+    status_sampler: BrotherStatusSampler | None,
+    batch_log_path: Path,
+    workload_name: str,
+    required_width_mm: int,
+) -> None:
+    """Require Brother terminal evidence after the Windows job clears."""
+    if status_sampler is None:
+        return
+
+    observation = status_sampler.wait_for_physical_completion(
+        timeout_seconds=STATUS_PHYSICAL_COMPLETION_TIMEOUT_SECONDS,
+        idle_stable_seconds=STATUS_PHYSICAL_IDLE_STABLE_SECONDS,
+    )
+
+    if observation.outcome == "READY_IDLE":
+        return
+
+    errors = ",".join(observation.status.errors) or "<none>"
+    if observation.outcome == "END_OF_MEDIA":
+        notice_reason = (
+            "Tape cassette reached end of media while finishing the previous "
+            f"job. Required: {required_width_mm} mm laminated tape. Replace "
+            "the cassette and close the cover. Later pending labels will "
+            "resume automatically after the correct cassette is detected."
         )
+        write_batch_log(
+            batch_log_path,
+            "WARNING BROTHER_END_OF_MEDIA_AFTER_SUBMISSION "
+            "All b-PAC submissions and the observed Windows job completed. "
+            "This batch will finalize so its source requests cannot be "
+            "submitted again. Later pending work will remain requested until "
+            "the required cassette is installed. "
+            f"errors='{errors}' raw={observation.status.raw_hex}",
+        )
+        logging.error(
+            "ACTIVE_PRINT_END_OF_MEDIA workload=%s required_width_mm=%s "
+            "raw=%s",
+            workload_name,
+            required_width_mm,
+            observation.status.raw_hex,
+        )
+        send_preflight_operator_notice(workload_name, notice_reason)
+        return
+
+    raise RuntimeError(
+        "Brother printer reported an error after the Windows job cleared: "
+        f"{errors}; raw={observation.status.raw_hex}"
+    )
 
 # ============================================================
 # DISPLAY PRINTING
@@ -2026,8 +2096,6 @@ def print_display_rows_with_template(
             f"labels={len(rows)}"
         ),
     )
-    spooler_completed = False
-
     try:
         doc.StartPrint("", PRINT_FLAGS)
         write_batch_log(
@@ -2060,12 +2128,18 @@ def print_display_rows_with_template(
 
         finish_bpac_document(doc, batch_log_path)
         spooler_observer.wait_for_completion()
-        spooler_completed = True
+        wait_for_brother_physical_completion(
+            status_sampler=status_sampler,
+            batch_log_path=batch_log_path,
+            workload_name=(
+                f"Display labels ({family['code']}, {variant})"
+            ),
+            required_width_mm=int(family["media_width_mm"]),
+        )
     finally:
         stop_print_observers(
             spooler_observer=spooler_observer,
             status_sampler=status_sampler,
-            spooler_completed=spooler_completed,
         )
 
 
@@ -2258,8 +2332,6 @@ def print_container_batch(
             f"labels={len(rows_to_print)}"
         ),
     )
-    spooler_completed = False
-
     try:
         doc.StartPrint("", PRINT_FLAGS)
         write_batch_log(
@@ -2288,12 +2360,19 @@ def print_container_batch(
 
         finish_bpac_document(doc, batch_log_path)
         spooler_observer.wait_for_completion()
-        spooler_completed = True
+        wait_for_brother_physical_completion(
+            status_sampler=status_sampler,
+            batch_log_path=batch_log_path,
+            workload_name=(
+                f"Container labels ({family['media_width_mm']} mm, "
+                f"{normalized_orientation})"
+            ),
+            required_width_mm=int(family["media_width_mm"]),
+        )
     finally:
         stop_print_observers(
             spooler_observer=spooler_observer,
             status_sampler=status_sampler,
-            spooler_completed=spooler_completed,
         )
 
 
@@ -2370,8 +2449,6 @@ def print_controller_batch(
         batch_log_path=batch_log_path,
         context=f"Controller family={family['code']} labels={len(rows)}",
     )
-    spooler_completed = False
-
     try:
         doc.StartPrint("", PRINT_FLAGS)
         write_batch_log(
@@ -2398,12 +2475,16 @@ def print_controller_batch(
 
         finish_bpac_document(doc, batch_log_path)
         spooler_observer.wait_for_completion()
-        spooler_completed = True
+        wait_for_brother_physical_completion(
+            status_sampler=status_sampler,
+            batch_log_path=batch_log_path,
+            workload_name="Controller labels (24 mm)",
+            required_width_mm=int(family["media_width_mm"]),
+        )
     finally:
         stop_print_observers(
             spooler_observer=spooler_observer,
             status_sampler=status_sampler,
-            spooler_completed=spooler_completed,
         )
 
 
@@ -2662,10 +2743,7 @@ def main() -> None:
     print_banner()
 
     startup_health_check()
-
-    # Cancel suppresses repeated dialogs for the exact same pending
-    # request set until the set changes or the service restarts.
-    cancelled_preflight_signature: str | None = None
+    preflight_recovery = AutomaticPreflightRecovery()
 
     while True:
         try:
@@ -2735,7 +2813,7 @@ def main() -> None:
                     and container_pending == 0
                     and controller_pending == 0
                 ):
-                    cancelled_preflight_signature = None
+                    preflight_recovery.clear()
                     logging.info("No pending labels. Service idle.")
                     conn.rollback()
                     clear_lock()
@@ -2910,21 +2988,6 @@ def main() -> None:
                         display_plan["workload_signature"]
                     )
 
-                    if (
-                        cancelled_preflight_signature
-                        == display_preflight_signature
-                    ):
-                        logging.info(
-                            "Preflight remains cancelled for unchanged "
-                            "Display request set; waiting for request change "
-                            "or service restart. signature=%s",
-                            display_preflight_signature,
-                        )
-                        conn.rollback()
-                        clear_lock()
-                        time.sleep(POLL_SECONDS)
-                        continue
-
                     display_preflight_passed = (
                         run_selected_workload_preflight(
                             workload_name=(
@@ -2938,13 +3001,11 @@ def main() -> None:
                                 "display_finalized.sql",
                             ),
                             csv_paths=(DISPLAY_CSV,),
+                            recovery=preflight_recovery,
                         )
                     )
 
                     if not display_preflight_passed:
-                        cancelled_preflight_signature = (
-                            display_preflight_signature
-                        )
                         conn.rollback()
                         clear_lock()
                         time.sleep(POLL_SECONDS)
@@ -2974,8 +3035,6 @@ def main() -> None:
                         clear_lock()
                         time.sleep(POLL_SECONDS)
                         continue
-
-                    cancelled_preflight_signature = None
 
                     if container_pending > 0:
                         logging.warning(
@@ -3072,21 +3131,6 @@ def main() -> None:
                         container_plan["workload_signature"]
                     )
 
-                    if (
-                        cancelled_preflight_signature
-                        == container_preflight_signature
-                    ):
-                        logging.info(
-                            "Preflight remains cancelled for unchanged "
-                            "Container request set; waiting for request change "
-                            "or service restart. signature=%s",
-                            container_preflight_signature,
-                        )
-                        conn.rollback()
-                        clear_lock()
-                        time.sleep(POLL_SECONDS)
-                        continue
-
                     container_preflight_passed = (
                         run_selected_workload_preflight(
                             workload_name="Container labels (36 mm)",
@@ -3104,13 +3148,11 @@ def main() -> None:
                                 CONTAINER_VERTICAL_CSV,
                                 CONTAINER_HORIZONTAL_CSV,
                             ),
+                            recovery=preflight_recovery,
                         )
                     )
 
                     if not container_preflight_passed:
-                        cancelled_preflight_signature = (
-                            container_preflight_signature
-                        )
                         conn.rollback()
                         clear_lock()
                         time.sleep(POLL_SECONDS)
@@ -3133,8 +3175,6 @@ def main() -> None:
                         clear_lock()
                         time.sleep(POLL_SECONDS)
                         continue
-
-                    cancelled_preflight_signature = None
 
                 elif controller_pending > 0:
                     controller_plan = pending_controller_preflight_plan(conn)
@@ -3187,21 +3227,6 @@ def main() -> None:
                         controller_plan["workload_signature"]
                     )
 
-                    if (
-                        cancelled_preflight_signature
-                        == controller_preflight_signature
-                    ):
-                        logging.info(
-                            "Preflight remains cancelled for unchanged "
-                            "Controller request set; waiting for request change "
-                            "or service restart. signature=%s",
-                            controller_preflight_signature,
-                        )
-                        conn.rollback()
-                        clear_lock()
-                        time.sleep(POLL_SECONDS)
-                        continue
-
                     controller_preflight_passed = (
                         run_selected_workload_preflight(
                             workload_name="Controller labels (24 mm)",
@@ -3221,13 +3246,11 @@ def main() -> None:
                                 "controller_finalized.sql",
                             ),
                             csv_paths=(CONTROLLER_CSV,),
+                            recovery=preflight_recovery,
                         )
                     )
 
                     if not controller_preflight_passed:
-                        cancelled_preflight_signature = (
-                            controller_preflight_signature
-                        )
                         conn.rollback()
                         clear_lock()
                         time.sleep(POLL_SECONDS)
@@ -3251,8 +3274,6 @@ def main() -> None:
                         clear_lock()
                         time.sleep(POLL_SECONDS)
                         continue
-
-                    cancelled_preflight_signature = None
 
                 # --------------------------------------------------
                 # Step 3: Only create batches AFTER printer passes Updated 04/16/26 for warning and loop

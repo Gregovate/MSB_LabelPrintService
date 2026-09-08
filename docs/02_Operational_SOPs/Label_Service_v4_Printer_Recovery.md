@@ -4,18 +4,22 @@
 |---|---|
 | Status | PRE-RELEASE — use for v4 acceptance/training only until v4 is deployed |
 | System | PRINT-SERVER / MSB Label Print Service v4 |
-| Last Updated | 2026-08-31 |
+| Last Updated | 2026-09-08 |
 | Related Engineering Contract | `docs/01_Engineering/Label_Service_v4_Architecture_and_Acceptance.md` |
 
 ## Purpose
 
-This SOP defines how PRINT-SERVER operators should respond to the visible v4 printer-recovery dialogs for wrong cassette, no media, cover open, printer unavailable, unsafe queue, and tape-out during an active batch.
+This SOP defines how PRINT-SERVER operators should respond to the visible v4
+printer-recovery notices for wrong cassette, no media, cover open, printer
+unavailable, unsafe queue, and tape-out during an active batch.
 
 The goal is to correct ordinary printer problems without creating failed PostgreSQL batches or requiring DBA cleanup.
 
 ## Normal Preflight Recovery
 
-For correctable problems discovered before a batch is created, v4 must show a visible dialog on the PRINT-SERVER Beelink.
+For correctable problems discovered before a batch is created, v4 must show a
+visible informational notice on the PRINT-SERVER console and continue checking
+the printer automatically.
 
 Example:
 
@@ -27,46 +31,45 @@ Wrong tape cassette loaded.
 Required: 24 mm laminated tape
 Detected: 36 mm laminated tape
 
-Change the cassette and close the cover,
-then press Retry to continue.
+Change the cassette and close the cover.
+Printing will resume automatically after the
+correct cassette is detected and the printer is idle.
 
-[ Retry ]   [ Cancel ]
+[ OK ]
 ```
 
 ### Operator action
 
-1. Read the required media shown in the dialog.
+1. Read the required media shown in the notice.
 2. Correct the physical condition.
 3. Close the printer cover.
-4. Press **Retry**.
-5. Do not re-request the label in Directus while the dialog is active.
+4. Dismiss the notice when convenient. The button does not control printing.
+5. Do not re-request the label in Directus while the request remains pending.
 
-### Retry behavior
+### Automatic retry behavior
 
-`Retry` reruns full preflight. It does not create a batch merely because the operator pressed Retry.
+The service reruns full preflight on its normal polling interval. It creates no
+batch until every preflight check passes.
 
-If the condition is still wrong, the service remains in the recovery path and reports the current condition.
+If the condition is still wrong, the service leaves all requests pending. If
+the detected condition changes—for example, an empty slot becomes a 36 mm
+cassette while the request requires 24 mm—the service sends a new notice that
+states both required and detected media.
 
-### Cancel behavior
+### Hold/cancel behavior
 
-Press **Cancel** when the requested print should not continue at this time.
+Candidate `4.1.0-rc4` does not put a Cancel button in the informational notice.
+Dismissal must not silently cancel a database-owned request. A durable Hold or
+Cancel action belongs in the operator application/dashboard and remains a
+separate capability.
 
-Cancel must:
-
-- stop the current preflight attempt;
-- return the service safely to idle;
-- leave source `print_label` requests untouched;
-- create no batch header/items;
-- require no PostgreSQL cleanup.
-
-To prevent a 15-second popup storm, v4 suppresses another preflight dialog for
-that exact unchanged pending request set. The same requests can be reconsidered
-after the pending selection changes or the service is restarted. This
-suppression is in-memory only and does not alter PostgreSQL request state.
+The service does not repeat the same notice on every 15-second poll. Failed
+notice delivery is retried at a bounded heartbeat; a materially changed
+printer condition sends a new notice immediately.
 
 ## Wrong Cassette
 
-The dialog should state both required and detected media when detection is available.
+The notice must state both required and detected media when detection is available.
 
 Examples:
 
@@ -82,17 +85,20 @@ Required: 12 mm laminated tape
 Detected: 36 mm laminated tape
 ```
 
-Replace the cassette with the required width, close the cover, and press **Retry**.
+Replace the cassette with the required width and close the cover. Printing
+resumes automatically only when the required width/type is detected.
 
 ## No Cassette / No Media
 
-Install the required cassette, close the cover, and press **Retry**.
+Install the required cassette and close the cover. Printing resumes
+automatically after the correct cassette is detected.
 
 Do not repeatedly toggle the Directus Print Label request.
 
 ## Cover Open
 
-Close the printer cover and press **Retry**.
+Close the printer cover. The next normal poll rechecks the cassette and printer
+state automatically.
 
 The service should not infer media identity while the cover-open status prevents reliable media reporting.
 
@@ -105,27 +111,34 @@ Confirm:
 - printer is reachable on the expected network;
 - Windows printer queue exists on PRINT-SERVER.
 
-After correcting the condition, press **Retry**.
+After correcting the condition, allow one normal polling interval for the
+service to recheck automatically.
 
-If the printer cannot be restored promptly, press **Cancel** and report the condition.
+If the printer cannot be restored promptly, leave the requests pending, stop
+requesting additional labels, and report the condition.
 
 ## Unsafe / Non-Empty Windows Queue
 
 Do not submit another print batch while the queue is in an unsafe or ambiguous state.
 
-If v4 displays a queue-intervention dialog:
+If v4 displays a queue-intervention notice:
 
 1. inspect the queue on PRINT-SERVER;
 2. determine whether a legitimate active job is still processing;
 3. do not delete jobs merely to make the warning disappear unless directed by the recovery runbook;
-4. press **Retry** only after the queue is known safe;
-5. otherwise press **Cancel** and escalate.
+4. allow the service to retry only after the queue is known safe;
+5. otherwise stop requesting additional labels and escalate.
 
 ## Tape-Out During an Active Batch
 
 Tape-out is different from preflight because an execution batch already exists and some labels may already have physically printed.
 
-When v4 detects Brother **End of media**, it must stop blindly advancing and display a recovery dialog such as:
+Candidate `4.1.0-rc4` keeps sampling after the Windows spooler clears until
+Brother reaches ready/idle or reports a terminal error. When it detects Brother
+**End of media** after all b-PAC submissions and the observed Windows job have
+completed, it records the terminal packet and finalizes that submitted batch.
+It then leaves later requests pending and displays an informational notice such
+as:
 
 ```text
 MSB Label Service
@@ -134,40 +147,49 @@ Tape cassette is empty.
 
 Replace with 36 mm laminated tape.
 Close the cover.
+Printing will resume automatically.
 
-[ Resume ]   [ Cancel ]
+[ OK ]
 ```
 
 ### Operator action
 
 1. Note the label that was physically printing or the last label visibly produced.
-2. Replace the cassette with the width shown by the dialog.
+2. Replace the cassette with the width shown by the notice.
 3. Close the cover.
-4. Press **Resume**.
+4. Wait for the service to resume automatically.
 5. Report the observed boundary label to Greg so the service logs can be correlated with the real printer behavior.
 
-### Resume behavior
+### Automatic resume behavior
 
-Before continuing, Resume must recheck:
+Before starting the next batch, the service rechecks:
 
 - printer reachability;
 - correct cassette width/type;
 - cover state;
 - printer readiness.
 
-Do not press Resume until the correct cassette is installed and the cover is closed.
+The service must also confirm Brother `phase=0x00`. This prevents a new batch
+from starting while the printer/driver is replaying the boundary label from the
+replacement cassette.
 
 ### Boundary-label rule
 
-Until controlled evidence proves otherwise, the label that was printing when tape ran out is considered **uncertain**.
+The September 8 production runout proved this behavior for a 24 mm Controller
+batch: the old cassette printed `CTRL:1098` at the green/racing-stripe boundary,
+and the Brother/Windows stack replayed `CTRL:1098` after the new cassette was
+installed. That one boundary replay is acceptable.
 
-Do not assume v4 should automatically reprint it. Brother/P-touch behavior suggests the printer/driver may resume or replay the interrupted label, but the exact b-PAC + Windows spooler behavior must be proven from a real event.
+The Label Service must not submit an additional application-level copy. The
+completed source request must remain cleared while later pending requests wait
+for correct replacement media.
 
-The service will log per-label sequence/context specifically so this can be determined when it naturally occurs.
+### If automatic recovery does not occur
 
-### Cancel during tape-out
-
-Cancel stops the active print path and preserves the batch/log evidence for controlled recovery. Do not manually clear database batch state unless following the current failed-batch/recovery SOP.
+Do not clear database state or re-request labels. Preserve the service log,
+batch log, Windows queue state, pending request IDs, and non-completed batch
+state. Follow the current failed-batch/runtime recovery SOP before stopping or
+restarting the worker.
 
 ## What Staff Should Report After Tape-Out
 
@@ -198,21 +220,26 @@ Brother raw/SNMP status captured by v4
 
 For tape-out, the batch log should identify the exact sequence number, asset ID/name, template family, media requirement, and status around the failure boundary.
 
-## PRINT-SERVER Interactive Session Requirement
+## PRINT-SERVER Notice Delivery
 
-Visible v4 dialogs require the service to run in the logged-on Windows session.
+The production worker remains a headless password-logon Scheduled Task.
+Candidate `4.1.0-rc4` uses Windows Terminal Services to send a non-blocking
+message to the active physical console session. The message is informational;
+printing recovery must not depend on the operator clicking it.
 
-PRINT-SERVER autologin is enabled, but v4 deployment acceptance must still verify that the Scheduled Task is configured to run interactively so the dialogs are actually visible on the Beelink screen.
-
-If the service is running but no expected dialog appears during a controlled wrong-media test, stop acceptance and correct the Scheduled Task/session configuration before production use.
+If no console session is attached, the service logs the failed delivery and
+retries at a bounded heartbeat. Controlled acceptance must prove that a
+required/detected-media notice appears on the PRINT-SERVER monitor while the
+worker remains in Session 0.
 
 ## Do Not Do These Things
 
-- Do not repeatedly request the same labels in Directus while a recovery dialog is active.
+- Do not repeatedly request the same labels in Directus while a recovery notice is active.
 - Do not assume a cleared Windows spooler proves a physical label printed.
 - Do not guess which boundary label printed after tape-out.
 - Do not clear failed batch rows directly unless following the controlled recovery SOP.
-- Do not switch cassette width and press Resume/Retry without closing the cover and allowing v4 to recheck status.
+- Do not expect printing to continue with the wrong cassette; v4 must keep the
+  requests pending and identify required/detected media in the notice.
 
 ## Related SOPs
 

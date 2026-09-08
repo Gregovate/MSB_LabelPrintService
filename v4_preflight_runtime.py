@@ -5,16 +5,146 @@ import logging
 import os
 import socket
 import tempfile
+import time
+from ctypes import wintypes
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from brother_status_runtime import query_brother_snmp_status
 
-MB_RETRYCANCEL = 0x00000005
+MB_OK = 0x00000000
 MB_ICONWARNING = 0x00000030
 MB_SETFOREGROUND = 0x00010000
 MB_TOPMOST = 0x00040000
-IDRETRY = 4
+WTS_CURRENT_SERVER_HANDLE = 0
+WTS_NO_ACTIVE_CONSOLE_SESSION = 0xFFFFFFFF
+
+
+@dataclass
+class _PreflightWaitState:
+    """In-memory state for one automatically rechecked workload."""
+
+    reason: str
+    attempts: int
+    started_at: float
+    last_notice_at: float
+    notice_delivered: bool
+
+
+class AutomaticPreflightRecovery:
+    """Run one preflight per service poll without blocking on a GUI dialog."""
+
+    def __init__(
+        self,
+        *,
+        notice_heartbeat_seconds: float = 60.0,
+        monotonic: Callable[[], float] = time.monotonic,
+        notify_operator: Callable[[str, str], bool] | None = None,
+    ) -> None:
+        if notice_heartbeat_seconds <= 0:
+            raise ValueError("notice_heartbeat_seconds must be greater than zero")
+
+        self.notice_heartbeat_seconds = notice_heartbeat_seconds
+        self.monotonic = monotonic
+        self.notify_operator = notify_operator or send_preflight_operator_notice
+        self._waiting: dict[str, _PreflightWaitState] = {}
+
+    def clear(self) -> None:
+        """Forget stale wait state after all pending work disappears."""
+        self._waiting.clear()
+
+    def check_once(
+        self,
+        *,
+        workload_name: str,
+        check_once: Callable[[], tuple[bool, str]],
+    ) -> bool:
+        """Run one gate attempt; the service's next poll performs the retry."""
+        ok, reason = check_once()
+        now = self.monotonic()
+        waiting = self._waiting.get(workload_name)
+
+        if ok:
+            attempt = 1
+            if waiting is not None:
+                attempt = waiting.attempts + 1
+                logging.info(
+                    "PREFLIGHT_RECOVERED workload=%s attempts=%s "
+                    "wait_seconds=%.1f detail=%s",
+                    workload_name,
+                    attempt,
+                    now - waiting.started_at,
+                    reason,
+                )
+                del self._waiting[workload_name]
+
+            logging.info(
+                "FULL_PREFLIGHT_PASS workload=%s attempt=%s detail=%s",
+                workload_name,
+                attempt,
+                reason,
+            )
+            print(f"Full preflight passed: {reason}")
+            return True
+
+        if waiting is None:
+            waiting = _PreflightWaitState(
+                reason=reason,
+                attempts=1,
+                started_at=now,
+                last_notice_at=now,
+                notice_delivered=False,
+            )
+            self._waiting[workload_name] = waiting
+            event = "ENTER"
+            should_notify = True
+        else:
+            waiting.attempts += 1
+            reason_changed = reason != waiting.reason
+            heartbeat_due = (
+                now - waiting.last_notice_at >= self.notice_heartbeat_seconds
+            )
+
+            if reason_changed:
+                waiting.reason = reason
+                waiting.last_notice_at = now
+                waiting.notice_delivered = False
+                event = "CHANGED"
+                should_notify = True
+            elif heartbeat_due:
+                waiting.last_notice_at = now
+                event = "HEARTBEAT"
+                should_notify = not waiting.notice_delivered
+            else:
+                return False
+
+        logging.warning(
+            "PREFLIGHT_WAITING event=%s workload=%s attempt=%s "
+            "wait_seconds=%.1f reason=%s automatic_recheck=true",
+            event,
+            workload_name,
+            waiting.attempts,
+            now - waiting.started_at,
+            reason,
+        )
+
+        if event in {"ENTER", "CHANGED"}:
+            logging.error(
+                "FULL_PREFLIGHT_FAIL workload=%s attempt=%s reason=%s",
+                workload_name,
+                waiting.attempts,
+                reason,
+            )
+            print(f"Full preflight waiting: {reason}")
+
+        if should_notify:
+            waiting.notice_delivered = self.notify_operator(
+                workload_name,
+                reason,
+            )
+
+        return False
 
 
 def _probe_writable_directory(path: Path) -> tuple[bool, str]:
@@ -101,12 +231,13 @@ def snmp_family_preflight(
         return False, (
             f"Printer unavailable: SNMP status query timed out for {host}. "
             f"Required: {expected_width_mm} mm laminated tape. "
-            "Check printer power/network, then press Retry."
+            "Check printer power/network; the service will retry automatically."
         )
     except Exception as exc:
         return False, (
             f"Printer status could not be read from {host}: {exc}. "
-            "Check printer power/network and cassette/cover, then press Retry."
+            "Check printer power/network and cassette/cover; the service will "
+            "retry automatically."
         )
 
     logging.info(
@@ -128,14 +259,15 @@ def snmp_family_preflight(
         return False, (
             "Printer cover is open. "
             f"Required: {expected_width_mm} mm laminated tape with cover closed. "
-            "Close the cover, then press Retry."
+            "Close the cover; the service will retry automatically."
         )
 
     if "End of media" in errors:
         return False, (
             "Tape cassette is at end of media. "
             f"Required: {expected_width_mm} mm laminated tape. "
-            "Replace the cassette and close the cover, then press Retry."
+            "Replace the cassette and close the cover; the service will resume "
+            "automatically."
         )
 
     if (
@@ -146,7 +278,8 @@ def snmp_family_preflight(
         return False, (
             "No usable tape cassette is detected. "
             f"Required: {expected_width_mm} mm laminated tape. "
-            "Install the cassette and close the cover, then press Retry."
+            "Install the cassette and close the cover; the service will resume "
+            "automatically."
         )
 
     if status.media_width_mm != expected_width_mm:
@@ -154,7 +287,8 @@ def snmp_family_preflight(
             "Wrong tape width loaded. "
             f"Required: {expected_width_mm} mm laminated tape. "
             f"Detected: {status.media_width_mm} mm {status.media_type}. "
-            "Change the cassette and close the cover, then press Retry."
+            "Change the cassette and close the cover; the service will resume "
+            "automatically."
         )
 
     if (
@@ -165,7 +299,8 @@ def snmp_family_preflight(
             "Wrong tape type loaded. "
             f"Required: {expected_width_mm} mm laminated tape. "
             f"Detected: {status.media_width_mm} mm {status.media_type}. "
-            "Change the cassette and close the cover, then press Retry."
+            "Change the cassette and close the cover; the service will resume "
+            "automatically."
         )
 
     remaining_errors = [
@@ -183,7 +318,8 @@ def snmp_family_preflight(
         return False, (
             "Brother printer reports an error: "
             + "; ".join(remaining_errors)
-            + ". Correct the printer condition, then press Retry."
+            + ". Correct the printer condition; the service will retry "
+            "automatically."
         )
 
     if "Replace media / wrong media" in errors:
@@ -191,7 +327,15 @@ def snmp_family_preflight(
             "Brother printer reports replace/wrong media. "
             f"Required: {expected_width_mm} mm laminated tape. "
             f"Detected: {status.media_width_mm} mm {status.media_type}. "
-            "Reseat or replace the cassette and close the cover, then press Retry."
+            "Reseat or replace the cassette and close the cover; the service "
+            "will resume automatically."
+        )
+
+    if status.phase_type_code != 0x00:
+        return False, (
+            "Printer is still physically processing the previous job "
+            f"(Brother phase=0x{status.phase_type_code:02X}). "
+            "The service will wait for physical idle and retry automatically."
         )
 
     return True, (
@@ -200,87 +344,90 @@ def snmp_family_preflight(
     )
 
 
-def show_preflight_retry_cancel(workload_name: str, reason: str) -> str:
-    """Show one blocking Windows Retry/Cancel dialog."""
+def send_preflight_operator_notice(workload_name: str, reason: str) -> bool:
+    """Send a non-blocking warning to the active Windows console session."""
     message = (
-        f"{workload_name} cannot print yet.\n\n"
+        f"{workload_name} are waiting.\n\n"
         f"{reason}\n\n"
-        "Retry reruns the complete preflight and creates no batch unless "
-        "every check passes.\n\n"
-        "Cancel leaves all Print Label requests pending and creates no "
-        "PostgreSQL execution batch."
-    )
-
-    logging.warning(
-        "PREFLIGHT_DIALOG_OPEN workload=%s reason=%s",
-        workload_name,
-        reason,
+        "The Label Service will recheck automatically and resume after the "
+        "printer is ready. Do not submit the same labels again."
     )
 
     if os.name != "nt":
-        logging.error(
-            "PREFLIGHT_DIALOG_UNAVAILABLE non-Windows runtime; treating as Cancel"
-        )
-        return "CANCEL"
-
-    result = ctypes.windll.user32.MessageBoxW(
-        0,
-        message,
-        "MSB Label Service - Printer Preflight",
-        MB_RETRYCANCEL | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
-    )
-
-    action = "RETRY" if result == IDRETRY else "CANCEL"
-    logging.info(
-        "PREFLIGHT_DIALOG_ACTION workload=%s action=%s",
-        workload_name,
-        action,
-    )
-    return action
-
-
-def run_operator_preflight_loop(
-    *,
-    workload_name: str,
-    check_once: Callable[[], tuple[bool, str]],
-) -> bool:
-    """Own the Retry/Cancel loop for one pending compatible workload."""
-    attempt = 0
-
-    while True:
-        attempt += 1
-        ok, reason = check_once()
-
-        if ok:
-            logging.info(
-                "FULL_PREFLIGHT_PASS workload=%s attempt=%s detail=%s",
-                workload_name,
-                attempt,
-                reason,
-            )
-            print(f"Full preflight passed: {reason}")
-            return True
-
-        logging.error(
-            "FULL_PREFLIGHT_FAIL workload=%s attempt=%s reason=%s",
+        logging.warning(
+            "PREFLIGHT_NOTICE_UNAVAILABLE workload=%s "
+            "reason=non-Windows-runtime",
             workload_name,
-            attempt,
-            reason,
-        )
-        print(f"Full preflight failed: {reason}")
-
-        action = show_preflight_retry_cancel(workload_name, reason)
-        if action == "RETRY":
-            logging.info(
-                "FULL_PREFLIGHT_RETRY workload=%s next_attempt=%s",
-                workload_name,
-                attempt + 1,
-            )
-            continue
-
-        logging.info(
-            "FULL_PREFLIGHT_CANCEL workload=%s attempts=%s",
-            workload_name,
-            attempt,
         )
         return False
+
+    try:
+        get_active_console_session = (
+            ctypes.windll.kernel32.WTSGetActiveConsoleSessionId
+        )
+        get_active_console_session.argtypes = []
+        get_active_console_session.restype = wintypes.DWORD
+        session_id = int(get_active_console_session())
+        if session_id == WTS_NO_ACTIVE_CONSOLE_SESSION:
+            logging.warning(
+                "PREFLIGHT_NOTICE_UNAVAILABLE workload=%s "
+                "reason=no-active-console-session",
+                workload_name,
+            )
+            return False
+
+        title = "MSB Label Service - Printer Attention"
+        response = wintypes.DWORD(0)
+        send_message = ctypes.windll.wtsapi32.WTSSendMessageW
+        send_message.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.BOOL,
+        ]
+        send_message.restype = wintypes.BOOL
+        sent = bool(
+            send_message(
+                wintypes.HANDLE(WTS_CURRENT_SERVER_HANDLE),
+                session_id,
+                title,
+                len(title.encode("utf-16-le")),
+                message,
+                len(message.encode("utf-16-le")),
+                MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
+                0,
+                ctypes.byref(response),
+                False,
+            )
+        )
+    except Exception as exc:
+        logging.exception(
+            "PREFLIGHT_NOTICE_FAILED workload=%s error=%s",
+            workload_name,
+            exc,
+        )
+        return False
+
+    if not sent:
+        logging.error(
+            "PREFLIGHT_NOTICE_FAILED workload=%s session_id=%s "
+            "windows_error=%s",
+            workload_name,
+            session_id,
+            ctypes.windll.kernel32.GetLastError(),
+        )
+        return False
+
+    logging.warning(
+        "PREFLIGHT_NOTICE_SENT workload=%s session_id=%s reason=%s",
+        workload_name,
+        session_id,
+        reason,
+    )
+    return True
