@@ -7,7 +7,7 @@
 | Branch | `main` plus scoped follow-up branches |
 | Baseline Issue | LabelPrintService #14 — closed after V4 deployment/merge |
 | Active Safety Issues | LabelPrintService #19 (low tape) and #21 (operator warning) |
-| Last Updated | 2026-09-03 |
+| Last Updated | 2026-09-08 |
 | Production Baseline | V4 is the controlled Scheduled Task worker; `label_poll_service_v3.py` v3.4 remains the preserved rollback path |
 
 ## Purpose
@@ -41,7 +41,7 @@ The Production Database must not store PRINT-SERVER-local Windows queue names or
 - printer/media/template preflight;
 - Windows spooler observation;
 - per-label execution logging;
-- operator dialogs shown on PRINT-SERVER;
+- non-blocking operator notices shown in the active PRINT-SERVER console;
 - no-double-print safeguards;
 - printer-specific runtime behavior.
 
@@ -448,9 +448,16 @@ objLine1   <- location_code
 
 The remaining work is the governed database request and immutable batch/history contract, V4 polling/rendering/finalization, enabling the QL runtime configuration, controlled physical acceptance, and safe recovery behavior. The absence of a natural QL end-of-roll cartridge must be recorded as an explicit evidence gap rather than silently treated as passed.
 
-## Operator-Correctable Preflight Dialogs
+## Operator-Correctable Preflight Recovery
 
-Recoverable preflight failures must not be log-only failures. v4 must display a visible blocking dialog on the PRINT-SERVER Beelink for operator-correctable conditions.
+Recoverable preflight failures must not be log-only failures. The production
+worker is headless and must never block waiting for a desktop button.
+
+Candidate `4.1.0-rc4` performs one full preflight on each normal service poll
+while the selected workload remains pending. It creates no database batch until
+the gate passes. When the failure first appears or materially changes, the
+worker sends a non-blocking Windows Terminal Services message to the active
+PRINT-SERVER console.
 
 Example:
 
@@ -462,22 +469,33 @@ Wrong tape cassette loaded.
 Required: 24 mm laminated tape
 Detected: 36 mm laminated tape
 
-Change the cassette and close the cover,
-then press Retry to continue.
+Change the cassette and close the cover.
+Printing will resume automatically when the
+required cassette is detected and the printer is idle.
 
-[ Retry ]   [ Cancel ]
+[ OK ]
 ```
 
 Expected behavior:
 
-- `Retry` reruns full preflight; it does not create a batch first;
-- `Cancel` returns the service safely to idle and leaves source `print_label` requests untouched;
-- do not open a new popup every poll cycle while one recovery dialog already owns the condition;
-- every displayed condition and operator response must also be logged.
+- the next normal poll reruns full preflight automatically;
+- dismissing the notice does not cancel or control the worker;
+- the notice must state required media and detected media when available;
+- the same unchanged condition does not open a new notice every poll;
+- a changed condition, such as no cassette becoming the wrong width, sends a
+  new notice;
+- failed notice delivery is retried at a bounded heartbeat;
+- all source `print_label` requests remain untouched until a successful batch;
+- every notice delivery success/failure and recovery is logged.
 
-Correctable dialog classes include at minimum wrong media width/type, no media, cover open, unavailable printer when retry is reasonable, and unsafe queue/intervention states.
+Correctable notice classes include at minimum wrong media width/type, no media,
+cover open, unavailable printer when retry is reasonable, and unsafe
+queue/intervention states.
 
-The production worker runs as a headless Scheduled Task with `LogonType: Password`; it must not depend on message boxes being visible. Operator state and Retry/Hold actions belong in a separate interactive dashboard started at Print Service logon. Closing that dashboard must not stop the worker.
+The notice is informational. Automatic recovery is authoritative and remains
+independent of the presence of an interactive session. A future dashboard may
+add Hold/Cancel controls, but closing a notice or dashboard must not stop the
+worker.
 
 ## Tape-Out During Active Printing
 
@@ -504,18 +522,24 @@ Immediately around each physical `PrintOut()` attempt, log enough context to ide
 
 For Wiring also log `objChannel`, `objLine1`, and `objLine2`.
 
-### Observation-only active-job capture
+### Physical-terminal active-job capture
 
-Candidate `4.1.0-rc3` starts a shared PT-P950NW status sampler before b-PAC
+V4 `4.1.0-rc3` started a shared PT-P950NW status sampler before b-PAC
 submission for every Display, Container, and Controller renderer. It samples
-through the active spooler window and for a short interval after the observed
-job clears. The tracked defaults are:
+through the active spooler window. The September 8 natural runout proved its
+fixed two-second post-spooler window could stop while Brother still reported
+`phase=0x01`, missing the later `error1=0x02` transition.
+
+Candidate `4.1.0-rc4` continues after the observed job clears until Brother
+reports ready/idle, fully exhausted media, another explicit error, or a bounded
+timeout. The tracked defaults are:
 
 ```ini
 status_sampler_enabled = true
 status_sample_interval_seconds = 0.25
 status_heartbeat_seconds = 5.0
-status_post_spooler_seconds = 2.0
+status_physical_completion_timeout_seconds = 90.0
+status_physical_idle_stable_seconds = 1.0
 ```
 
 Batch logs retain the initial packet, every raw transition, periodic unchanged
@@ -523,37 +547,35 @@ heartbeats, transient query errors/recovery, and a final sample summary. The
 existing per-label b-PAC queue messages in the same log provide asset IDs and
 submission timestamps for correlation.
 
-This is evidence collection only. The current renderer may submit several
+Unknown raw transitions remain evidence-only. The current renderer may submit several
 `PrintOut()` calls before the physical spooler job finishes, so `4.1.0-rc3`
-does not claim that it can stop unsent labels at the warning boundary. No raw
+did not claim that it could stop unsent labels at the warning boundary. No raw
 change or unknown notification byte controls printing until the natural-runout
 test proves a stable warning signature and its timing relative to the physical
 labels.
 
-### Tape-out dialog
+### Exhausted-media completion and later work
 
-When the fully exhausted `error1=0x02` state is detected during an active batch, v4 must stop blindly advancing and show a visible dialog such as:
+When `error1=0x02` is detected after all b-PAC submissions succeeded and the
+observed Windows job cleared, candidate `4.1.0-rc4` records the exhausted-media
+terminal state and finalizes the submitted batch. It does not submit an
+application-level copy of the boundary label.
 
-```text
-Tape cassette is empty.
-
-Replace with 36 mm laminated tape.
-Close the cover.
-
-[ Resume ]   [ Cancel ]
-```
-
-`Resume` must recheck reachability, cassette width/type, cover state, and readiness before continuing.
-
-`Cancel` must stop safely and preserve evidence for controlled recovery.
+Later requests remain pending. Their preflight enters automatic wait, sends an
+operator notice naming the required cassette, and resumes only after SNMP
+confirms the required width/type, no error, and `phase=0x00`. This prevents a
+new batch from overlapping the Brother/driver's replacement-cassette replay.
 
 ### Boundary-label uncertainty
 
-Do not implement application-level automatic reprint of the boundary label until controlled evidence proves whether Brother/b-PAC/Windows already resumes or reprints that interrupted label after cassette replacement.
+Do not implement application-level automatic reprint of the boundary label.
+The September 8 event proved that Brother/Windows replayed `CTRL:1098` after the
+replacement cassette was installed even though the Windows queue had cleared.
 
 When the next natural tape-out occurs, operators should report which label was physically printing/last visible. Correlate that report with the per-label and batch logs to determine actual driver/printer behavior.
 
-Until proven otherwise, the boundary label at tape-out is considered uncertain.
+One replacement-cassette replay of the boundary label is acceptable. The
+service must not submit that completed source request again.
 
 ## Main v4 Execution Order
 
@@ -566,7 +588,7 @@ poll pending requests
     -> derive one-line/two-line render plan
     -> select printer/template/media mapping
     -> full preflight
-    -> operator Retry/Cancel loop for correctable preflight failures
+    -> automatic wait/recheck plus non-blocking operator notice on failure
     -> only after PASS create display batch with label_template_id
     -> snapshot exactly the selected family and frozen line1/line2/QR content
     -> commit batch execution state
@@ -632,8 +654,9 @@ During controlled V4 production use, prove the remaining applicable cases at min
 
 - intentionally assigned Display resolves through `QR_24MM_HORIZONTAL`;
 - wrong 36/12 mm media is rejected before batch creation;
-- visible Retry/Cancel dialog appears;
-- after cassette correction, Retry passes and exactly one controlled batch prints.
+- visible required/detected-media notice appears;
+- after cassette correction, automatic preflight passes and exactly one
+  controlled batch prints.
 
 ### Mixed Display families
 
@@ -664,22 +687,24 @@ NO success history mutation
 NO manual DB cleanup
 ```
 
-### Operator dialogs
+### Operator notices and automatic recovery
 
-- wrong media dialog is visible on Beelink;
-- Retry reruns preflight;
-- Cancel leaves requests untouched;
+- wrong-media notice is visible on the PRINT-SERVER console;
+- notice states both required and detected media;
+- service keeps rechecking without blocking on the notice;
+- correct replacement media resumes automatically;
+- wrong replacement media remains pending and produces a changed notice;
 - no repeated popup storm occurs;
-- dialog action is logged;
-- Scheduled Task interactive-session behavior is proven.
+- notice delivery and recovery are logged;
+- no database reset or service restart is required.
 
 ### Tape-out instrumentation
 
-Candidate `4.1.0-rc3` supplies the required short-interval active-job sampler
+Candidate `4.1.0-rc4` supplies the required short-interval active-job sampler
 for Display, Container, and Controller jobs. Its controlled production
-deployment must prove that initial/change/heartbeat/post-spooler records are
-written to the batch log before the next natural runout. The raw 32-byte status
-must be retained even when a changed byte is not decoded yet.
+deployment must prove that sampling remains active after spooler clearing until
+Brother reaches a physical terminal state. The raw 32-byte status must be
+retained even when a changed byte is not decoded yet.
 
 Application-level boundary-label reprint remains unapproved until real evidence is obtained.
 
@@ -694,7 +719,7 @@ Acceptance must prove at minimum:
 - already-deployed full-URL labels continue to resolve;
 - V3.4 rollback retains its original full-URL behavior.
 
-## v4 Full Preflight and Operator Retry/Cancel Gate
+## v4 Full Preflight and Automatic Recovery Gate
 
 The v4 branch implementation uses Brother SNMP status as the physical
 printer/media authority for PT-P950NW preflight. The decoder uses the same
@@ -713,6 +738,7 @@ Brother SNMP status responds
 required tape width is loaded
 required tape type is laminated tape
 cover is closed / media is present / end-of-media is not active
+Brother physical phase is idle (`phase=0x00`)
 every required LBX exists and opens in b-PAC
 every required LBX contains the expected named objects
 Windows printer queue can be inspected
@@ -721,24 +747,24 @@ Windows printer queue is empty/safe
 
 Active/FAILED PostgreSQL batch guards remain before this gate.
 
-If any gate fails, v4 shows one blocking Windows **Retry / Cancel** dialog in
-the interactive PRINT-SERVER session. Retry reruns the entire gate. No
-execution batch header/item or source `print_label` mutation is allowed before
-the gate passes.
+If any gate fails, candidate `4.1.0-rc4` returns control to the main polling
+loop without creating an execution batch or changing source `print_label`.
+The next normal poll rebuilds the current workload and reruns the entire gate.
 
-Cancel leaves pending source requests untouched and creates no execution
-batch. To prevent a 15-second popup storm, v4 suppresses another dialog for the
-exact same pending request set until that set changes or the service restarts.
-The suppression is in-memory runtime state only and does not mutate
-PostgreSQL.
+The worker sends a non-blocking message through Windows Terminal Services to
+the active console when the condition first appears or changes. The message
+states required and detected media when known and says recovery is automatic.
+The same unchanged condition produces only bounded log heartbeats; failed
+message delivery is retried at the heartbeat so a later console session can
+receive it.
 
-After a Retry path finally passes full preflight, v4 re-reads a workload
+After an automatic retry passes full preflight, v4 re-reads a workload
 signature before batch creation. Display signatures include `display_id`,
 `display_name`, and `label_template_id`; Container signatures include
-`container_id` and `container_type_id`. If that signature changed while the
-operator dialog/preflight loop was active, v4 creates no batch and returns to a
-fresh poll so the new workload is rebuilt and preflighted before any snapshot
-state is written.
+`container_id` and `container_type_id`. If that signature changed between
+automatic preflight and the postflight check, v4 creates no batch and returns
+to a fresh poll so the new workload is rebuilt and preflighted before any
+snapshot state is written.
 
 Immediately before the batch header is inserted, v4 freezes the exact pending
 asset IDs, acquires row locks on those selected source rows, and rechecks the
@@ -758,17 +784,19 @@ an unpreflighted physical template into the later exact-ID snapshot.
 
 Controlled acceptance must deliberately prove wrong 24/36 mm media, no
 cassette, cover open, unavailable printer, unsafe queue, missing runtime
-file/path, Retry recovery, Cancel suppression, and zero PostgreSQL execution
-state change on every failed preflight.
+file/path, automatic recovery, visible notice delivery, no notice storm, and
+zero PostgreSQL execution-state change on every failed preflight.
 
 ## Remaining Required Work and Separate Workstreams
 
 Remaining separately tracked work after the V4 baseline merge:
 
 - production Location/rack Code 128 request-to-print support on the QL-820NWB;
-- visible foreground operator alerts;
-- active-print striped low-tape transition capture using the `4.1.0-rc3`
-  sampler, followed by evidence-based stop-before-next-label behavior;
+- controlled production acceptance of `4.1.0-rc4` automatic media recovery,
+  active-console notice delivery, and physical-terminal sampling;
+- identification of any earlier striped low-tape transition, followed by
+  evidence-based stop-before-next-label behavior if a distinct usable signal
+  exists;
 - restart/resume and no-double-print acceptance;
 - final Display and Container regression acceptance;
 - V3.4 rollback acceptance.

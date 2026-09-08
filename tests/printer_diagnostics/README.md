@@ -64,7 +64,7 @@ Do not add print commands to the status probe. Any future direct-print experimen
 
 ## Production active-job observation
 
-V4 `4.1.0-rc3` uses `brother_status_sampler_runtime.py` to query the Brother
+V4 `4.1.0-rc4` uses `brother_status_sampler_runtime.py` to query the Brother
 SNMP status OID throughout active PT-P950NW Display, Container, and Controller
 jobs. That production observer writes to the correlated batch log; it is not a
 replacement for this isolated direct-status diagnostic harness. Its current

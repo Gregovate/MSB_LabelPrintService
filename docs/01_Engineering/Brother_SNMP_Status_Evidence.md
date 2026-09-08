@@ -5,8 +5,8 @@
 | Document Type | Engineering Test Evidence |
 | System | MSB Label Print Service / PRINT-SERVER |
 | Printers | PT-P950NW and QL-820NWB |
-| Status | CURRENT — recovered bench evidence plus active-job capture contract |
-| Last Reviewed | 2026-09-03 |
+| Status | CURRENT — recovered bench evidence plus production natural-runout evidence |
+| Last Reviewed | 2026-09-08 |
 | Controlling Issue | [#19](https://github.com/Gregovate/MSB_LabelPrintService/issues/19) |
 
 ## Purpose
@@ -72,9 +72,55 @@ Near the end of a cassette, striped tape passes through the printer before the u
 
 The controlled natural-runout test must begin logging before the striped section reaches the sensor and continue through the final `0x02` end-of-media state. Each sample must retain the complete raw 32-byte value and be correlated with precise timestamp, batch/item identity, b-PAC result, and Windows spooler state. Raw changes must be preserved even when the current decoder gives them no name.
 
-### Active-job sampler candidate
+### 2026-09-08 production natural runout
 
-V4 `4.1.0-rc3` adds an observation-only PT-P950NW status sampler to every
+Controller batch 34 supplied the first production natural-runout evidence on
+24 mm laminated tape.
+
+The sampler captured this ready packet before b-PAC submission at
+`2026-09-08 12:53:00`:
+
+```text
+80 20 42 30 70 30 04 00 00 00 18 01 00 00 00 00 00 00 00 00 00 00 00 00 01 08 00 00 00 00 00 00
+```
+
+It captured the normal active-phase transition to `phase=0x01`, but stopped at
+`12:53:07`, two seconds after Windows spooler job 33 cleared. The final sampled
+packet still reported `phase=0x01`:
+
+```text
+80 20 42 30 70 30 04 00 00 00 18 01 00 00 00 00 00 00 00 01 00 00 00 00 01 08 00 00 00 00 00 00
+```
+
+Physical observation established the boundary:
+
+- the old cassette printed `CTRL:1098`;
+- a green end marker appeared immediately before the racing stripes;
+- the tape exhausted at that point;
+- after a new 24 mm cassette was installed, the Brother/driver printed
+  `CTRL:1098` again without another V4 submission;
+- the one boundary-label replay is acceptable;
+- V4 must not independently submit the completed Controller a third time.
+
+At `12:53:22`, the next normal poll found another pending Controller and
+captured the fully exhausted cassette during preflight:
+
+```text
+80 20 42 30 70 30 04 00 02 00 18 01 00 00 00 00 00 00 02 01 00 00 00 00 01 08 00 00 00 00 00 00
+```
+
+This packet proves `error1=0x02`, `status=0x02`, and `phase=0x01` for the
+exhausted 24 mm cassette. It does not prove a separate earlier low-tape byte.
+The fixed two-second post-spooler window missed the physical tape-out because
+sampling stopped while Brother still reported an active phase.
+
+Database safety succeeded. The completed batch was not re-requested, the 13
+later pending Controllers remained requested, and a controlled service restart
+printed exactly those 13 without a database reset or a third `CTRL:1098`.
+
+### Active-job sampler behavior
+
+V4 `4.1.0-rc3` added an observation-only PT-P950NW status sampler to every
 Display, Container, and Controller b-PAC job. It starts before `StartPrint`,
 continues while the Windows spooler job is active, and remains active for two
 seconds after the observed job clears. The default interval is 250 ms with an
@@ -97,9 +143,24 @@ requests, or alter batch state. Its only purpose in this candidate is to
 capture the racing-stripe transition so a later change can be based on physical
 evidence.
 
-When a natural runout produces `event=CHANGED`, preserve the complete batch log
-with the physical last-good/boundary-label observation in this repository and
-Issue #19 before beginning another runout or recovery experiment.
+The September 8 event proved that the original fixed post-spooler window was
+not sufficient. Candidate `4.1.0-rc4` removes that timer. After the observed
+Windows job clears, the sampler continues until Brother reports one of these
+physical terminal conditions:
+
+- ready/idle (`phase=0x00`) continuously for the configured stability window;
+- fully exhausted cassette (`error1=0x02`);
+- another explicit Brother error;
+- bounded physical-completion timeout.
+
+The first fresh sample after spooler clearing is required before ready/idle can
+be accepted. A new preflight also rejects `phase != 0x00`, preventing the next
+batch from starting while the Brother/driver is still physically completing or
+replaying the prior label.
+
+Unknown raw-byte transitions remain evidence-only. Candidate `4.1.0-rc4` does
+not invent a low-tape code or submit an application-level copy of the boundary
+label.
 
 ### No cassette, cover closed
 
@@ -236,12 +297,18 @@ Two operator-labeled P950 tests (cover open and empty 36 mm cassette) accidental
 3. Detect the fully exhausted P950 cassette from Error Information 1 `0x02` while retaining cassette width/type.
 4. Do not conflate `0x02` with the still-unidentified low-tape striped end-marker warning.
 5. Validate required width and tested media type before creating a database execution batch.
-6. During the controlled natural-runout test, capture the complete raw 32-byte status repeatedly before the stripes, throughout the striped section, and through full exhaustion.
+6. During natural runout, capture the complete raw 32-byte status repeatedly before the stripes, throughout the striped section, and through full exhaustion.
 7. Correlate every status transition with timestamp, batch/item identity, b-PAC return, and Windows spooler state so recovery never guesses whether the boundary label physically printed.
-8. The operator dialog must demonstrably become visible and gain attention. A `PREFLIGHT_DIALOG_OPEN` log entry proves only that code attempted to create it.
-9. Controlled acceptance must cover cassette replacement, Retry/Cancel, restart/resume, and no-double-print behavior before V4 deployment.
+8. The non-blocking operator notice must demonstrably appear in the active PRINT-SERVER console and identify required/detected media. A log-only event is not operator notice.
+9. Controlled acceptance must cover cassette replacement, automatic recovery, wrong replacement media, notice delivery, restart/resume, and no-double-print behavior.
 10. Active-job sampling is an evidence mechanism, not an approved automatic
     stop rule. No changed byte becomes a stop condition until a controlled
     physical runout proves its meaning and timing.
 
-During later V4 acceptance, a pending 36 mm Container with 24 mm laminated tape returned the same proven 24 mm ready status value. Preflight correctly blocked printing. The operator initially reported no visible dialog and later found it buried behind six windows, confirming the unresolved focus/attention defect.
+During later V4 acceptance, a pending 36 mm Container with 24 mm laminated tape returned the same proven 24 mm ready status value. Preflight correctly blocked printing. The operator initially reported no visible dialog and later found it buried behind six windows, confirming that worker-owned desktop dialogs were not an acceptable notification path.
+
+During the September 8 production runout, the worker logged
+`PREFLIGHT_DIALOG_OPEN` from Session 0 but no message appeared on the
+PRINT-SERVER console. The worker then blocked indefinitely until it was
+manually restarted. Candidate `4.1.0-rc4` removes that blocking call and uses a
+non-blocking Windows Terminal Services notice plus automatic preflight recheck.

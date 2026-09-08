@@ -34,7 +34,7 @@ class ControllerV4ContractTests(unittest.TestCase):
             ):
                 service_versions.append(ast.literal_eval(node.value))
 
-        self.assertEqual(service_versions, ["4.1.0-rc3"])
+        self.assertEqual(service_versions, ["4.1.0-rc4"])
 
     def test_service_source_parses_and_defines_controller_pipeline(self) -> None:
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
@@ -79,11 +79,15 @@ class ControllerV4ContractTests(unittest.TestCase):
                 completion_wait = function_source.index(
                     "spooler_observer.wait_for_completion()"
                 )
+                physical_wait = function_source.index(
+                    "wait_for_brother_physical_completion("
+                )
                 observer_stop = function_source.index("stop_print_observers(")
 
                 self.assertLess(observer_start, bpac_start)
                 self.assertLess(bpac_start, completion_wait)
-                self.assertLess(completion_wait, observer_stop)
+                self.assertLess(completion_wait, physical_wait)
+                self.assertLess(physical_wait, observer_stop)
                 self.assertIn("status_sampler=status_sampler", function_source)
 
     def test_status_sampling_starts_before_spooler_observation(self) -> None:
@@ -116,6 +120,24 @@ class ControllerV4ContractTests(unittest.TestCase):
             0.25,
         )
         self.assertEqual(
+            config.getfloat(
+                "printing",
+                "status_physical_completion_timeout_seconds",
+            ),
+            90.0,
+        )
+        self.assertEqual(
+            config.getfloat(
+                "printing",
+                "status_physical_idle_stable_seconds",
+            ),
+            1.0,
+        )
+        self.assertNotIn(
+            "status_post_spooler_seconds",
+            config["printing"],
+        )
+        self.assertEqual(
             config["label_family.QR_24MM_HORIZONTAL"]["media_width_mm"],
             "24",
         )
@@ -127,6 +149,31 @@ class ControllerV4ContractTests(unittest.TestCase):
             config["label_family.QR_24MM_HORIZONTAL"]["template_1_line"],
             "QR_label_1_line_horz_24mm.lbx",
         )
+
+    def test_headless_worker_does_not_use_blocking_message_box(self) -> None:
+        service_source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        preflight_source = (
+            ROOT / "v4_preflight_runtime.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("run_operator_preflight_loop", service_source)
+        self.assertNotIn("MessageBoxW", preflight_source)
+        self.assertIn("WTSSendMessageW", preflight_source)
+        self.assertIn("AutomaticPreflightRecovery", service_source)
+
+    def test_active_end_of_media_sends_required_width_notice(self) -> None:
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        helper_source = next(
+            ast.get_source_segment(source, node) or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "wait_for_brother_physical_completion"
+        )
+
+        self.assertIn('observation.outcome == "END_OF_MEDIA"', helper_source)
+        self.assertIn("Required: {required_width_mm} mm", helper_source)
+        self.assertIn("send_preflight_operator_notice", helper_source)
 
     def test_snapshot_freezes_full_url_and_visible_controller_identity(self) -> None:
         sql = (SQL_DIR / "controller_snapshot_v4.sql").read_text(

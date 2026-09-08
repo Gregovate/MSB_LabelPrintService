@@ -4,20 +4,21 @@ The MSB Label Print Service is the Windows-side printing subsystem that converts
 
 ## Current State
 
-**Status: OPERATIONAL / UNATTENDED REBOOT RECOVERY VERIFIED / ENGINEERING DOCUMENTATION RECOVERY CONTINUES**
+**Status: V4 OPERATIONAL / CONTROLLER CONSUMER ACCEPTED / RC4 PRINTER-RECOVERY CANDIDATE IN ENGINEERING**
 
 Current source baseline:
 
 ```text
 Repository: Gregovate/MSB_LabelPrintService
-Production/main baseline: 2ec15fcf9fd39230dfb4aba32721e72e8697b0b4
-Recovery branch: agent/label-print-service-engineering-recovery
-Service source: label_poll_service_v3.py
-SERVICE_VERSION: 3.4
-SHA-256: DFE48D51D4213313F47738B09964BCDFB4788A8B83D5D4CB6130443E7EA3C1BD
+Production/main baseline: baf5389550ce5514467da909848e7b1dafdb7de6
+Engineering branch: agent/automatic-media-recovery
+Production service source: label_poll_service_v4.py
+Production version before this candidate: 4.1.0-rc3
+Current engineering candidate: 4.1.0-rc4
 ```
 
-No Label Print Service application-code change was required to correct the post-reboot manual-start problem.
+V3.4 remains the preserved rollback path and must never run concurrently with
+V4.
 
 ## Production Host
 
@@ -56,7 +57,7 @@ Windows reboot/update
     -> Microsoft OpenSSH Server starts automatically
     -> Scheduled Task "MSB Label Service" starts automatically
     -> C:\Program Files\Python\python.exe
-       C:\MSB_LabelService\label_poll_service_v3.py
+       C:\MSB_LabelService\label_poll_service_v4.py
     -> PostgreSQL polling resumes
     -> Brother b-PAC / Windows spooler / PT-P950NW printing operates normally
 ```
@@ -157,7 +158,7 @@ Production action:
 
 ```text
 Program/script: C:\Program Files\Python\python.exe
-Arguments:      C:\MSB_LabelService\label_poll_service_v3.py
+Arguments:      C:\MSB_LabelService\label_poll_service_v4.py
 Start in:       C:\MSB_LabelService
 ```
 
@@ -195,7 +196,7 @@ The service is an **External Supporting Subsystem** of the MSB Production Databa
 Directus / Production Database
     -> PostgreSQL label request + batch contracts
         -> PRINT-SERVER
-            -> MSB Label Print Service v3.4
+            -> MSB Label Print Service v4
                 -> Brother b-PAC
                     -> Windows print spooler
                         -> Brother PT-P950NW
@@ -223,10 +224,10 @@ Directus / Production Database
 
 ## Important Current Source Behavior
 
-Current v3.4 behavior includes:
+Current V4 behavior includes:
 
 - PostgreSQL polling every 15 seconds;
-- Display and Container label requests;
+- Display, Container, and Controller label requests;
 - snapshot batch creation;
 - one physical label per Display;
 - two physical labels per Container;
@@ -236,6 +237,11 @@ Current v3.4 behavior includes:
 - requester/actor attribution introduced in v3.2;
 - failed-batch persistence and repeated-print-storm protection introduced in v3.3;
 - rotating service logs introduced in v3.4.
+
+Candidate `4.1.0-rc4` adds automatic correct-media recovery, non-blocking
+required/detected-media notices to the active Windows console, Brother physical
+terminal-state sampling after spooler clearing, and a preflight guard that
+prevents a new batch while Brother remains in an active phase.
 
 Do not weaken the failed-batch, queue, spooler-verification, transaction, or retry safeguards during recovery work.
 

@@ -45,6 +45,13 @@ Controller polling. Candidate `4.1.0-rc2` automatically completed a one-label
 batch and, after an offline request buildup, one 13-label batch with 13/13
 items, zero pending requests, zero failed batches, and no duplicate output.
 
+On 2026-09-08, a natural 24 mm runout exposed two remaining defects in
+`4.1.0-rc3`: the status sampler stopped while Brother still reported an active
+phase, and a Session 0 Retry/Cancel message was not visible. Database queue
+safety passed; the later 13 requests required no database reset and printed
+exactly once after controlled restart. Candidate `4.1.0-rc4` owns the automatic
+recovery correction described below.
+
 ## Polling and Scheduling Contract
 
 The worker continues polling every 15 seconds. Polling must not create a message every 15 seconds.
@@ -79,9 +86,17 @@ The PT-P950NW has one installed cassette. Pending P950 work must be grouped by m
 
 The QL-820NWB Location workload is independent and requires DK-2251 62 mm / marketed 2.4-inch red-black continuous media.
 
-## Print-Server Job Dashboard
+## Print-Server Notice and Future Job Dashboard
 
-The headless Scheduled Task worker must not own the interactive user interface. Its `LogonType: Password` execution can run without an interactive Windows desktop, so worker-side message boxes are not reliable operator feedback.
+The headless Scheduled Task worker must not block on an interactive response.
+Its `LogonType: Password` execution can run without an interactive Windows
+desktop, so a normal worker-owned `MessageBoxW` is not reliable operator
+feedback.
+
+Candidate `4.1.0-rc4` sends a non-blocking informational notice to the active
+console through Windows Terminal Services. The notice states required and
+detected media. Automatic preflight recovery remains independent of whether
+the notice is dismissed or whether a console session is present.
 
 A separate interactive dashboard will run when the Print Service user logs in. Closing or crashing the dashboard must not stop polling or printing.
 
@@ -117,11 +132,16 @@ The controlled investigation must:
 
 If a reliable warning exists, production must stop before submitting the next label and leave remaining requests pending.
 
-Candidate `4.1.0-rc3` adds an observation-only 250 ms PT-P950NW sampler around
+Candidate `4.1.0-rc3` added an observation-only 250 ms PT-P950NW sampler around
 every Display, Container, and Controller active spooler job. It records the
 initial raw packet, every change, five-second heartbeats, query errors/recovery,
-and a two-second post-spooler window in the batch log. This closes the missing
-evidence-capture gap before the next natural runout.
+and a two-second post-spooler window in the batch log.
+
+The September 8 runout proved that fixed window insufficient. Candidate
+`4.1.0-rc4` continues sampling after spooler clearing until ready/idle,
+end-of-media, another explicit error, or a bounded timeout. Preflight rejects
+Brother `phase != 0x00`, so later pending work cannot start while the
+Brother/driver is still completing or replaying the boundary label.
 
 The existing V4 loop still submits multiple `PrintOut()` calls before waiting
 for the spooler. The sampler may therefore capture physical tape advancement
@@ -159,8 +179,10 @@ The FieldWiring application owns creating Wiring requests. LabelPrintService own
 - Location request-to-print pipeline;
 - Wiring request-to-print pipeline using the approved 12 mm fold-over format;
 - print-job dashboard;
-- deploy and verify `4.1.0-rc3` active-job status capture;
-- low-tape/end-marker capture during the next natural runout;
+- deploy and verify `4.1.0-rc4` physical-terminal status capture, active-console
+  notice, and automatic correct-media recovery;
+- capture any distinct low-tape/end-marker transition during a later natural
+  runout;
 - safe stop-before-next-label behavior if a warning signature is found;
 - Display/Container regressions after shared scheduler changes.
 
