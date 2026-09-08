@@ -8,7 +8,7 @@
 | Audience | MSB Database Administrator / Print Server Maintainer |
 | Status | CURRENT |
 | Owner | MSB Database Administrator |
-| Last Reviewed | 2026-08-25 |
+| Last Reviewed | 2026-09-08 |
 | Keywords | label print service, LOR runner, print server, PRINT-SERVER, Brother, PT-P950NW, b-PAC, SSH, OpenSSH, Task Scheduler, reboot, recovery |
 
 ## Purpose
@@ -26,7 +26,7 @@ configuration, logs, or recovery actions.
 
 ## Current Production Runtime
 
-Verified on 2026-08-24:
+Verified application state before the `4.1.0-rc4` deployment on 2026-09-08:
 
 ```text
 Windows hostname: PRINT-SERVER
@@ -34,14 +34,164 @@ IPv4: 192.168.5.56
 Windows account: PRINT-SERVER\Print Service
 Production working directory: C:\MSB_LabelService
 Production Python: C:\Program Files\Python\python.exe
-Current service script: C:\MSB_LabelService\label_poll_service_v3.py
-Service version: 3.4
+Current service script: C:\MSB_LabelService\label_poll_service_v4.py
+Current deployed version: 4.1.0-rc3
+Current deployed Git commit: 5d4a626
+Approved rc4 merge commit: 6ba488fd5c4df88fa66941f3c304c20c71e9ab1f
+Approved rc4 version: 4.1.0-rc4
 Legacy manual launcher: C:\start_label_service.bat
 Brother printer queue: Brother PT-P950NW
 Brother printer port: 192.168.5.12_1
 ```
 
+The legacy V3.4 source remains the rollback baseline. It is not the normal
+Scheduled Task action and V3 and V4 must never run concurrently.
+
 Do not record the Windows account password or `config.local.ini` secrets in Git.
+
+## Controlled V4 Application Update
+
+This procedure updates the existing Git-backed application under
+`C:\MSB_LabelService`. It does not change the Scheduled Task definition,
+protected `config.v4.local.ini`, printer driver, templates, or database.
+
+Run from a PowerShell session on PRINT-SERVER.
+
+### 1. Read-only preflight
+
+```powershell
+Set-Location C:\MSB_LabelService
+
+git status --short --branch
+git rev-parse HEAD
+
+Get-ScheduledTask -TaskName "MSB Label Service" |
+    Select-Object TaskName,State
+
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+    Where-Object CommandLine -Match "label_poll_service_v[34]\.py" |
+    Select-Object ProcessId,SessionId,CommandLine
+
+Get-PrintJob -PrinterName "Brother PT-P950NW" -ErrorAction SilentlyContinue |
+    Select-Object ID,DocumentName,JobStatus,SubmittedTime
+
+Get-PrintJob -PrinterName "Brother QL-820NWB" -ErrorAction SilentlyContinue |
+    Select-Object ID,DocumentName,JobStatus,SubmittedTime
+
+Get-Content C:\MSB_LabelService\logs\label_service.log -Tail 30
+```
+
+Proceed only when:
+
+- Git is on `main` with no modified/untracked files;
+- exactly one V4 process is running and no V3 process exists;
+- both Windows print queues are empty;
+- the recent service log shows zero pending Display, Container, and Controller
+  requests and no active error/traceback.
+
+If any condition is different, stop and inspect it before changing the runtime.
+
+### 2. Stop the existing worker
+
+```powershell
+Stop-ScheduledTask -TaskName "MSB Label Service"
+```
+
+Inspect the result before continuing:
+
+```powershell
+Get-ScheduledTask -TaskName "MSB Label Service" |
+    Select-Object TaskName,State
+
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+    Where-Object CommandLine -Match "label_poll_service_v[34]\.py" |
+    Select-Object ProcessId,SessionId,CommandLine
+```
+
+Expected: task state `Ready` and no Label Service Python process. Do not pull
+new source while the old worker is still running.
+
+### 3. Fast-forward to the reviewed merge
+
+Record the rollback commit in the PowerShell session, then perform only a
+fast-forward update:
+
+```powershell
+$labelServiceRollbackCommit = git rev-parse HEAD
+git pull --ff-only origin main
+```
+
+Inspect the update:
+
+```powershell
+git status --short --branch
+git rev-parse HEAD
+```
+
+For the `4.1.0-rc4` deployment, the expected HEAD is:
+
+```text
+6ba488fd5c4df88fa66941f3c304c20c71e9ab1f
+```
+
+Do not start the service if the pull is not a clean fast-forward to the
+reviewed commit.
+
+### 4. Compile the deployed runtime
+
+```powershell
+& "C:\Program Files\Python\python.exe" -m py_compile `
+    .\label_poll_service_v4.py `
+    .\v4_preflight_runtime.py `
+    .\brother_status_runtime.py `
+    .\brother_status_sampler_runtime.py `
+    .\spooler_observer_runtime.py
+```
+
+No output is expected. On any compile error, leave the task stopped and follow
+the rollback section.
+
+### 5. Start and verify exactly one rc4 worker
+
+```powershell
+Start-ScheduledTask -TaskName "MSB Label Service"
+```
+
+After at least one normal 15-second polling interval, inspect:
+
+```powershell
+Start-Sleep -Seconds 20
+
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+    Where-Object CommandLine -Match "label_poll_service_v[34]\.py" |
+    Select-Object ProcessId,SessionId,CommandLine
+
+Get-Content C:\MSB_LabelService\logs\label_service.log -Tail 50 |
+    Select-String "4.1.0-rc4|Pending labels|No pending labels|ERROR|Traceback"
+```
+
+Expected:
+
+- exactly one `label_poll_service_v4.py` process;
+- startup banner `MSB Label Service 4.1.0-rc4`;
+- a successful poll with the expected pending counts;
+- no `ERROR` or traceback.
+
+### Rollback after a failed rc4 startup
+
+Use only the commit captured in `$labelServiceRollbackCommit` by this
+procedure. Do not clear the spooler or alter PostgreSQL as part of source
+rollback.
+
+```powershell
+Stop-ScheduledTask -TaskName "MSB Label Service"
+git switch --detach $labelServiceRollbackCommit
+```
+
+Re-run the compilation command for the files present at that commit, start the
+Scheduled Task, and verify the restored version/process/log. Preserve the rc4
+failure output for engineering review. Return the checkout to reviewed `main`
+only through a later controlled deployment.
 
 ## `Print Service` Account and Credential Contract
 
@@ -243,7 +393,7 @@ Windows boot/reboot
     -> OpenSSH Server starts automatically
     -> Scheduled Task "MSB Label Service" starts after boot
     -> C:\Program Files\Python\python.exe
-       C:\MSB_LabelService\label_poll_service_v3.py
+       C:\MSB_LabelService\label_poll_service_v4.py
     -> Label Service performs its startup health check
     -> Label Service polls PostgreSQL every 15 seconds
     -> Brother b-PAC submits print jobs
@@ -268,7 +418,8 @@ interactive Google Drive mount.
 
 ## Historical Manual Launcher
 
-The legacy desktop launcher remains available as a fallback:
+The legacy desktop launcher remains on the host for historical rollback
+reference:
 
 ```text
 C:\start_label_service.bat
@@ -285,7 +436,10 @@ cd /d C:\MSB_LabelService
 pause
 ```
 
-This launcher is interactive and was the former normal startup method. Before the unattended startup change, a user had to log into Windows and manually start it after a reboot.
+This launcher is interactive and was the former normal startup method. It
+still starts V3 and is not the normal V4 fallback. Before the unattended
+startup change, a user had to log into Windows and manually start it after a
+reboot.
 
 Do not use the batch file as the Scheduled Task action. The scheduled task launches Python directly.
 
@@ -396,7 +550,7 @@ Brother port: 192.168.5.12_1
 
 The Windows print infrastructure therefore returns at boot independently of an interactive desktop.
 
-## Headless Service Verification
+## Historical V3 Headless Service Verification
 
 Before creating the scheduled task, the existing production service was started through SSH while the Beelink remained at the Windows sign-in screen:
 
@@ -458,7 +612,7 @@ Task Scheduler may display quotation marks around this field after the executabl
 **Add arguments**
 
 ```text
-C:\MSB_LabelService\label_poll_service_v3.py
+C:\MSB_LabelService\label_poll_service_v4.py
 ```
 
 Quotation marks around this argument are acceptable.
@@ -597,7 +751,7 @@ Expected executable and command line:
 
 ```text
 ExecutablePath : C:\Program Files\Python\python.exe
-CommandLine    : "C:\Program Files\Python\python.exe" "C:\MSB_LabelService\label_poll_service_v3.py"
+CommandLine    : "C:\Program Files\Python\python.exe" "C:\MSB_LabelService\label_poll_service_v4.py"
 ```
 
 ## Verify Service Polling
@@ -663,12 +817,16 @@ The original post-reboot manual-start reliability problem is therefore resolved 
 
 ## Manual Fallback Start
 
-If the scheduled task is intentionally stopped and an administrator needs an interactive fallback, use either the existing desktop launcher or run:
+If the scheduled task is intentionally stopped and an administrator needs an
+interactive V4 fallback, run:
 
 ```cmd
 cd /d C:\MSB_LabelService
-"C:\Program Files\Python\python.exe" label_poll_service_v3.py
+"C:\Program Files\Python\python.exe" label_poll_service_v4.py
 ```
+
+Do not use `C:\start_label_service.bat` for V4; the historical launcher still
+starts V3.
 
 Do not start a manual copy if the Scheduled Task copy is already running.
 
@@ -762,11 +920,11 @@ Before clearing the spooler:
 
 ## Related Documents
 
-- [Repository README](../readme.md)
+- [Repository README](../../readme.md)
 - [Runtime Recovery — 2026-08-22](Label_Print_Service_Runtime_Recovery_2026-08-22.md)
 - [How the Label Service Works](How_Label_Service_Works.md)
 - [Historical Operator Guide](Operator_Label_Printing.md)
-- [Label Print Service Engineering Rules](../System_Documentation/Project_Rules/Label_Print_Service_Engineering_Rules.md)
+- [Label Print Service Engineering Rules](../../System_Documentation/Project_Rules/Label_Print_Service_Engineering_Rules.md)
 - [LOR Runner Operations and Disaster Recovery](https://github.com/Gregovate/MSB-Production-Database-Project/blob/main/LOR2DB/Application/Office_PC_Runner_Operations_and_Disaster_Recovery.md)
 - [LOR Routine Display Maintenance and PRINT-SERVER Cutover Incident — 2026-08-25](https://github.com/Gregovate/MSB-Production-Database-Project/blob/main/LOR2DB/Application/LOR_Routine_Display_Maintenance_and_PRINT_SERVER_Cutover_Incident_2026-08-25.md)
 
@@ -774,6 +932,7 @@ Before clearing the spooler:
 
 | Date | Change |
 |---|---|
+| 2026-09-08 | Corrected the active Scheduled Task/runtime references to V4 and added the controlled Git-backed V4 application update, verification, and rollback procedure required before deploying `4.1.0-rc4`. |
 | 2026-08-25 | Corrected the false Session-0 Google Drive conclusion; recorded required Print Service autologon, completed V1.6.0 production cutover, reboot/parser/ingest/Run 13 acceptance, and the remaining G: readiness limitation. |
 | 2026-08-25 | Recorded the initial Session-0 LOR path probe and merged V1.6.0 `PrintServerUnattended` deployment implementation; later cold-boot testing superseded the headless conclusion. |
 | 2026-08-25 | Corrected the credential-retrieval record: the current authorized source is an onsite physical label at the PRINT-SERVER workstation, not a password-manager entry. The password value remains excluded from Git. |
