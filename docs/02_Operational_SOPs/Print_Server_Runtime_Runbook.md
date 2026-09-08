@@ -121,21 +121,34 @@ $labelServiceRollbackCommit = git rev-parse HEAD
 git pull --ff-only origin main
 ```
 
-Inspect the update:
+Inspect the update and prove that the reviewed rc4 runtime is present without
+later changes to its executable modules:
 
 ```powershell
 git status --short --branch
 git rev-parse HEAD
+
+$reviewedRc4Commit = "6ba488fd5c4df88fa66941f3c304c20c71e9ab1f"
+git merge-base --is-ancestor $reviewedRc4Commit HEAD
+if ($LASTEXITCODE -ne 0) {
+    throw "Reviewed rc4 commit is not contained in the deployed checkout."
+}
+
+git diff --exit-code $reviewedRc4Commit HEAD -- `
+    label_poll_service_v4.py `
+    v4_preflight_runtime.py `
+    brother_status_runtime.py `
+    brother_status_sampler_runtime.py `
+    spooler_observer_runtime.py
+if ($LASTEXITCODE -ne 0) {
+    throw "Runtime files differ from the reviewed rc4 commit."
+}
 ```
 
-For the `4.1.0-rc4` deployment, the expected HEAD is:
-
-```text
-6ba488fd5c4df88fa66941f3c304c20c71e9ab1f
-```
-
-Do not start the service if the pull is not a clean fast-forward to the
-reviewed commit.
+The checkout HEAD may be newer than `6ba488f` because documentation-only
+commits can follow the rc4 merge. Do not start the service unless the pull was
+a clean fast-forward, the reviewed rc4 commit is an ancestor, and the runtime
+file comparison returns no differences.
 
 ### 4. Compile the deployed runtime
 
@@ -932,6 +945,7 @@ Before clearing the spooler:
 
 | Date | Change |
 |---|---|
+| 2026-09-08 | Corrected the rc4 verification gate so later documentation-only merges do not invalidate deployment: the reviewed rc4 commit must be an ancestor and the executable runtime files must match it exactly. |
 | 2026-09-08 | Corrected the active Scheduled Task/runtime references to V4 and added the controlled Git-backed V4 application update, verification, and rollback procedure required before deploying `4.1.0-rc4`. |
 | 2026-08-25 | Corrected the false Session-0 Google Drive conclusion; recorded required Print Service autologon, completed V1.6.0 production cutover, reboot/parser/ingest/Run 13 acceptance, and the remaining G: readiness limitation. |
 | 2026-08-25 | Recorded the initial Session-0 LOR path probe and merged V1.6.0 `PrintServerUnattended` deployment implementation; later cold-boot testing superseded the headless conclusion. |
