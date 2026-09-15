@@ -16,6 +16,7 @@ from brother_status_runtime import BrotherStatus
 
 ReadStatus = Callable[[], BrotherStatus]
 LogMessage = Callable[[str], None]
+RecoverableReason = Callable[[BrotherStatus], str | None]
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,7 @@ class BrotherStatusSampler:
         *,
         timeout_seconds: float,
         idle_stable_seconds: float,
+        recoverable_reason: RecoverableReason | None = None,
     ) -> PhysicalCompletionObservation:
         """Observe past spooler clearing until Brother is idle or errors."""
         if timeout_seconds <= 0:
@@ -181,9 +183,10 @@ class BrotherStatusSampler:
         if self._thread is None:
             raise RuntimeError("Brother status sampler is not running")
 
-        started_at = time.monotonic()
-        deadline = started_at + timeout_seconds
+        remaining_timeout_seconds = timeout_seconds
+        previous_check_at = time.monotonic()
         idle_since: float | None = None
+        previous_pause_reason: str | None = None
 
         with self._lock:
             starting_sample_count = self._sample_count
@@ -196,12 +199,46 @@ class BrotherStatusSampler:
 
         while True:
             now = time.monotonic()
+            elapsed = max(0.0, now - previous_check_at)
+            previous_check_at = now
             with self._lock:
                 status = self._last_status
                 sample_count = self._sample_count
 
             if status is not None:
-                if "End of media" in status.errors:
+                pause_reason = (
+                    recoverable_reason(status)
+                    if recoverable_reason is not None
+                    else None
+                )
+
+                if pause_reason is not None:
+                    if pause_reason != previous_pause_reason:
+                        self.log_message(
+                            "BROTHER_STATUS_PHYSICAL_WAIT_PAUSED "
+                            f"context='{self.context}' sample={sample_count} "
+                            f"remaining_seconds="
+                            f"{remaining_timeout_seconds:.1f} "
+                            f"reason='{pause_reason}' raw={status.raw_hex}"
+                        )
+                    previous_pause_reason = pause_reason
+                    idle_since = None
+                else:
+                    if previous_pause_reason is not None:
+                        self.log_message(
+                            "BROTHER_STATUS_PHYSICAL_WAIT_RESUMED "
+                            f"context='{self.context}' sample={sample_count} "
+                            f"remaining_seconds="
+                            f"{remaining_timeout_seconds:.1f} "
+                            f"raw={status.raw_hex}"
+                        )
+                    previous_pause_reason = None
+                    remaining_timeout_seconds -= elapsed
+
+                if (
+                    pause_reason is None
+                    and "End of media" in status.errors
+                ):
                     self.log_message(
                         "BROTHER_STATUS_PHYSICAL_TERMINAL outcome=END_OF_MEDIA "
                         f"context='{self.context}' sample={sample_count} "
@@ -212,7 +249,7 @@ class BrotherStatusSampler:
                         status=status,
                     )
 
-                if status.errors:
+                if pause_reason is None and status.errors:
                     errors = ",".join(status.errors)
                     self.log_message(
                         "BROTHER_STATUS_PHYSICAL_TERMINAL outcome=ERROR "
@@ -230,7 +267,8 @@ class BrotherStatusSampler:
                 # Windows queue disappearance. Explicit errors are accepted
                 # immediately because they cannot be confused with readiness.
                 if (
-                    sample_count > starting_sample_count
+                    pause_reason is None
+                    and sample_count > starting_sample_count
                     and status.phase_type_code == 0x00
                 ):
                     if idle_since is None:
@@ -247,11 +285,15 @@ class BrotherStatusSampler:
                             outcome="READY_IDLE",
                             status=status,
                         )
-                elif status.phase_type_code != 0x00:
+                elif (
+                    pause_reason is None
+                    and status.phase_type_code != 0x00
+                ):
                     idle_since = None
+            else:
+                remaining_timeout_seconds -= elapsed
 
-            remaining = deadline - now
-            if remaining <= 0:
+            if remaining_timeout_seconds <= 0:
                 with self._lock:
                     last_status = self._last_status
                 last_raw = (
@@ -266,8 +308,18 @@ class BrotherStatusSampler:
                 )
 
             self._stop_event.wait(
-                min(self.poll_interval_seconds, remaining)
+                min(
+                    self.poll_interval_seconds,
+                    remaining_timeout_seconds
+                    if previous_pause_reason is None
+                    else self.poll_interval_seconds,
+                )
             )
+
+    def latest_status(self) -> BrotherStatus | None:
+        """Return the newest immutable status snapshot, if one exists."""
+        with self._lock:
+            return self._last_status
 
     def _record_error(self, exc: Exception, *, first_attempt: bool) -> None:
         now = time.monotonic()

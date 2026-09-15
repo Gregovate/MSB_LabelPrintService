@@ -20,6 +20,7 @@ import os
 
 from brother_status_runtime import query_brother_snmp_status
 from brother_status_sampler_runtime import BrotherStatusSampler
+from active_print_recovery_runtime import ActivePrintMediaRecovery
 from v4_preflight_runtime import (
     AutomaticPreflightRecovery,
     send_preflight_operator_notice,
@@ -79,6 +80,14 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-09-15 — v4.1.0-rc5
+#   • FIX: Keep an active Brother job recoverable through tape replacement
+#       - Pauses the spooler and physical-completion timeouts for known media
+#         conditions instead of falsely failing after 90 seconds
+#       - Reports required and detected media to the active operator session
+#       - Lets the retained Brother job resume without application resubmission
+#       - Finalizes the original batch after spooler clear and physical idle
+#
 ## 2026-09-08 — v4.1.0-rc4
 #   • FIX: Recover automatically from preflight printer/media conditions
 #       - Removes the blocking Session 0 Retry/Cancel dialog dependency
@@ -217,7 +226,7 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc4"
+SERVICE_VERSION = "4.1.0-rc5"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -320,6 +329,11 @@ STATUS_PHYSICAL_IDLE_STABLE_SECONDS = CONFIG.getfloat(
     "status_physical_idle_stable_seconds",
     fallback=1.0,
 )
+ACTIVE_MEDIA_NOTICE_HEARTBEAT_SECONDS = CONFIG.getfloat(
+    "printing",
+    "active_media_notice_heartbeat_seconds",
+    fallback=60.0,
+)
 
 if STATUS_SAMPLE_INTERVAL_SECONDS <= 0:
     raise RuntimeError("status_sample_interval_seconds must be greater than zero")
@@ -332,6 +346,10 @@ if STATUS_PHYSICAL_COMPLETION_TIMEOUT_SECONDS <= 0:
 if STATUS_PHYSICAL_IDLE_STABLE_SECONDS < 0:
     raise RuntimeError(
         "status_physical_idle_stable_seconds cannot be negative"
+    )
+if ACTIVE_MEDIA_NOTICE_HEARTBEAT_SECONDS <= 0:
+    raise RuntimeError(
+        "active_media_notice_heartbeat_seconds must be greater than zero"
     )
 
 DISPLAY_CSV = Path(CONFIG["csv_files"]["display"])
@@ -1939,12 +1957,34 @@ def stop_print_observers(
         status_sampler.stop()
 
 
+def create_active_print_media_recovery(
+    *,
+    status_sampler: BrotherStatusSampler | None,
+    batch_log_path: Path,
+    workload_name: str,
+    required_width_mm: int,
+) -> ActivePrintMediaRecovery | None:
+    """Create the shared media-wait state for spooler and physical waits."""
+    if status_sampler is None:
+        return None
+
+    return ActivePrintMediaRecovery(
+        workload_name=workload_name,
+        required_width_mm=required_width_mm,
+        log_message=lambda message: write_batch_log(batch_log_path, message),
+        log_event=lambda message: logging.warning("%s", message),
+        notify_operator=send_preflight_operator_notice,
+        notice_heartbeat_seconds=ACTIVE_MEDIA_NOTICE_HEARTBEAT_SECONDS,
+    )
+
+
 def wait_for_brother_physical_completion(
     *,
     status_sampler: BrotherStatusSampler | None,
     batch_log_path: Path,
     workload_name: str,
     required_width_mm: int,
+    media_recovery: ActivePrintMediaRecovery | None,
 ) -> None:
     """Require Brother terminal evidence after the Windows job clears."""
     if status_sampler is None:
@@ -1953,6 +1993,11 @@ def wait_for_brother_physical_completion(
     observation = status_sampler.wait_for_physical_completion(
         timeout_seconds=STATUS_PHYSICAL_COMPLETION_TIMEOUT_SECONDS,
         idle_stable_seconds=STATUS_PHYSICAL_IDLE_STABLE_SECONDS,
+        recoverable_reason=(
+            media_recovery.observe_status
+            if media_recovery is not None
+            else None
+        ),
     )
 
     if observation.outcome == "READY_IDLE":
@@ -2096,6 +2141,13 @@ def print_display_rows_with_template(
             f"labels={len(rows)}"
         ),
     )
+    workload_name = f"Display labels ({family['code']}, {variant})"
+    media_recovery = create_active_print_media_recovery(
+        status_sampler=status_sampler,
+        batch_log_path=batch_log_path,
+        workload_name=workload_name,
+        required_width_mm=int(family["media_width_mm"]),
+    )
     try:
         doc.StartPrint("", PRINT_FLAGS)
         write_batch_log(
@@ -2127,14 +2179,21 @@ def print_display_rows_with_template(
                 )
 
         finish_bpac_document(doc, batch_log_path)
-        spooler_observer.wait_for_completion()
+        spooler_observer.wait_for_completion(
+            pause_reason_provider=(
+                lambda: media_recovery.observe_status(
+                    status_sampler.latest_status()
+                )
+                if media_recovery is not None and status_sampler is not None
+                else None
+            ),
+        )
         wait_for_brother_physical_completion(
             status_sampler=status_sampler,
             batch_log_path=batch_log_path,
-            workload_name=(
-                f"Display labels ({family['code']}, {variant})"
-            ),
+            workload_name=workload_name,
             required_width_mm=int(family["media_width_mm"]),
+            media_recovery=media_recovery,
         )
     finally:
         stop_print_observers(
@@ -2332,6 +2391,16 @@ def print_container_batch(
             f"labels={len(rows_to_print)}"
         ),
     )
+    workload_name = (
+        f"Container labels ({family['media_width_mm']} mm, "
+        f"{normalized_orientation})"
+    )
+    media_recovery = create_active_print_media_recovery(
+        status_sampler=status_sampler,
+        batch_log_path=batch_log_path,
+        workload_name=workload_name,
+        required_width_mm=int(family["media_width_mm"]),
+    )
     try:
         doc.StartPrint("", PRINT_FLAGS)
         write_batch_log(
@@ -2359,15 +2428,21 @@ def print_container_batch(
                 )
 
         finish_bpac_document(doc, batch_log_path)
-        spooler_observer.wait_for_completion()
+        spooler_observer.wait_for_completion(
+            pause_reason_provider=(
+                lambda: media_recovery.observe_status(
+                    status_sampler.latest_status()
+                )
+                if media_recovery is not None and status_sampler is not None
+                else None
+            ),
+        )
         wait_for_brother_physical_completion(
             status_sampler=status_sampler,
             batch_log_path=batch_log_path,
-            workload_name=(
-                f"Container labels ({family['media_width_mm']} mm, "
-                f"{normalized_orientation})"
-            ),
+            workload_name=workload_name,
             required_width_mm=int(family["media_width_mm"]),
+            media_recovery=media_recovery,
         )
     finally:
         stop_print_observers(
@@ -2449,6 +2524,13 @@ def print_controller_batch(
         batch_log_path=batch_log_path,
         context=f"Controller family={family['code']} labels={len(rows)}",
     )
+    workload_name = "Controller labels (24 mm)"
+    media_recovery = create_active_print_media_recovery(
+        status_sampler=status_sampler,
+        batch_log_path=batch_log_path,
+        workload_name=workload_name,
+        required_width_mm=int(family["media_width_mm"]),
+    )
     try:
         doc.StartPrint("", PRINT_FLAGS)
         write_batch_log(
@@ -2474,12 +2556,21 @@ def print_controller_batch(
                 )
 
         finish_bpac_document(doc, batch_log_path)
-        spooler_observer.wait_for_completion()
+        spooler_observer.wait_for_completion(
+            pause_reason_provider=(
+                lambda: media_recovery.observe_status(
+                    status_sampler.latest_status()
+                )
+                if media_recovery is not None and status_sampler is not None
+                else None
+            ),
+        )
         wait_for_brother_physical_completion(
             status_sampler=status_sampler,
             batch_log_path=batch_log_path,
-            workload_name="Controller labels (24 mm)",
+            workload_name=workload_name,
             required_width_mm=int(family["media_width_mm"]),
+            media_recovery=media_recovery,
         )
     finally:
         stop_print_observers(

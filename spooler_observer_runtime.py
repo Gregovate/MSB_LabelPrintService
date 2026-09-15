@@ -16,6 +16,7 @@ from typing import Any
 PrintJob = Mapping[str, Any]
 ReadJobs = Callable[[str], list[PrintJob]]
 LogMessage = Callable[[str], None]
+PauseReason = Callable[[], str | None]
 
 
 class SpoolerJobObserver:
@@ -119,10 +120,18 @@ class SpoolerJobObserver:
         *,
         appear_timeout_seconds: float = 15,
         clear_timeout_seconds: float = 90,
+        pause_reason_provider: PauseReason | None = None,
     ) -> set[int]:
-        """Require at least one observed new job and wait for it to clear."""
+        """Require a new job and wait for it to clear.
+
+        The clear timeout counts only while the printer is not in a known
+        recoverable pause. This lets an already-submitted Brother job remain
+        authoritative while an operator replaces missing or incorrect media.
+        """
         if self._thread is None:
             raise RuntimeError("Spooler observer was not started")
+        if clear_timeout_seconds <= 0:
+            raise ValueError("clear_timeout_seconds must be greater than zero")
 
         appear_deadline = time.monotonic() + appear_timeout_seconds
         seen_job_ids: set[int] = set()
@@ -154,8 +163,15 @@ class SpoolerJobObserver:
                 f"{appear_timeout_seconds:g} seconds."
             )
 
-        clear_deadline = time.monotonic() + clear_timeout_seconds
-        while time.monotonic() < clear_deadline:
+        remaining_clear_seconds = clear_timeout_seconds
+        previous_check_at = time.monotonic()
+        previous_pause_reason: str | None = None
+
+        while remaining_clear_seconds > 0:
+            now = time.monotonic()
+            elapsed = max(0.0, now - previous_check_at)
+            previous_check_at = now
+
             with self._lock:
                 error = self._error
                 latest_job_ids = set(self._latest_job_ids)
@@ -171,8 +187,34 @@ class SpoolerJobObserver:
                 )
                 return seen_job_ids
 
-            remaining = clear_deadline - time.monotonic()
-            self._sample_event.wait(max(0, min(remaining, 0.1)))
+            pause_reason = (
+                pause_reason_provider()
+                if pause_reason_provider is not None
+                else None
+            )
+            if pause_reason is not None:
+                if pause_reason != previous_pause_reason:
+                    self.log_message(
+                        "Spooler completion timeout paused for recoverable "
+                        f"printer state: ids={sorted(seen_job_ids)} "
+                        f"remaining_seconds={remaining_clear_seconds:.1f} "
+                        f"reason='{pause_reason}'"
+                    )
+                previous_pause_reason = pause_reason
+            else:
+                if previous_pause_reason is not None:
+                    self.log_message(
+                        "Spooler completion timeout resumed after printer "
+                        f"recovery: ids={sorted(seen_job_ids)} "
+                        f"remaining_seconds={remaining_clear_seconds:.1f}"
+                    )
+                previous_pause_reason = None
+                remaining_clear_seconds -= elapsed
+
+            wait_seconds = 0.1
+            if pause_reason is None:
+                wait_seconds = min(wait_seconds, remaining_clear_seconds)
+            self._sample_event.wait(max(0, wait_seconds))
             self._sample_event.clear()
 
         raise RuntimeError(

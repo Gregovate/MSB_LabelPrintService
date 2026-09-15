@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import threading
 import unittest
 
 from spooler_observer_runtime import SpoolerJobObserver
@@ -100,6 +101,44 @@ class SpoolerJobObserverTests(unittest.TestCase):
                 )
         finally:
             observer.stop()
+
+    def test_pauses_clear_timeout_during_recoverable_media_wait(self) -> None:
+        state = {"job_active": True, "media_wait": True}
+        job = [{"JobId": 109, "pDocument": "container"}]
+
+        def read_jobs(_printer_name: str) -> list[dict[str, object]]:
+            return job if state["job_active"] else []
+
+        observer = SpoolerJobObserver(
+            printer_name="Brother PT-P950NW",
+            known_job_ids=set(),
+            expected_document="container",
+            read_jobs=read_jobs,
+            log_message=lambda _message: None,
+            poll_interval_seconds=0.001,
+        )
+
+        def replace_media() -> None:
+            time.sleep(0.05)
+            state["media_wait"] = False
+            state["job_active"] = False
+
+        observer.start()
+        replacement = threading.Thread(target=replace_media)
+        replacement.start()
+        try:
+            seen = observer.wait_for_completion(
+                appear_timeout_seconds=0.02,
+                clear_timeout_seconds=0.01,
+                pause_reason_provider=lambda: (
+                    "End of media" if state["media_wait"] else None
+                ),
+            )
+        finally:
+            replacement.join()
+            observer.stop()
+
+        self.assertEqual(seen, {109})
 
     def test_ignores_jobs_present_before_submission(self) -> None:
         baseline_job = [{"JobId": 7, "pDocument": "unrelated"}]

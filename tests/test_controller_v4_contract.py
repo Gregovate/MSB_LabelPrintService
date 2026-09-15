@@ -34,7 +34,7 @@ class ControllerV4ContractTests(unittest.TestCase):
             ):
                 service_versions.append(ast.literal_eval(node.value))
 
-        self.assertEqual(service_versions, ["4.1.0-rc4"])
+        self.assertEqual(service_versions, ["4.1.0-rc5"])
 
     def test_service_source_parses_and_defines_controller_pipeline(self) -> None:
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
@@ -77,7 +77,7 @@ class ControllerV4ContractTests(unittest.TestCase):
                     'doc.StartPrint("", PRINT_FLAGS)'
                 )
                 completion_wait = function_source.index(
-                    "spooler_observer.wait_for_completion()"
+                    "spooler_observer.wait_for_completion("
                 )
                 physical_wait = function_source.index(
                     "wait_for_brother_physical_completion("
@@ -174,6 +174,32 @@ class ControllerV4ContractTests(unittest.TestCase):
         self.assertIn('observation.outcome == "END_OF_MEDIA"', helper_source)
         self.assertIn("Required: {required_width_mm} mm", helper_source)
         self.assertIn("send_preflight_operator_notice", helper_source)
+
+    def test_all_renderers_pause_spooler_timeout_for_media_recovery(self) -> None:
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        renderer_names = {
+            "print_display_rows_with_template",
+            "print_container_batch",
+            "print_controller_batch",
+        }
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if node.name not in renderer_names:
+                continue
+            renderer_source = ast.get_source_segment(source, node) or ""
+            self.assertIn(
+                "pause_reason_provider=",
+                renderer_source,
+                node.name,
+            )
+            self.assertIn(
+                "media_recovery=media_recovery",
+                renderer_source,
+                node.name,
+            )
 
     def test_snapshot_freezes_full_url_and_visible_controller_identity(self) -> None:
         sql = (SQL_DIR / "controller_snapshot_v4.sql").read_text(
