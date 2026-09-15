@@ -49,8 +49,17 @@ On 2026-09-08, a natural 24 mm runout exposed two remaining defects in
 `4.1.0-rc3`: the status sampler stopped while Brother still reported an active
 phase, and a Session 0 Retry/Cancel message was not visible. Database queue
 safety passed; the later 13 requests required no database reset and printed
-exactly once after controlled restart. Candidate `4.1.0-rc4` owns the automatic
-recovery correction described below.
+exactly once after controlled restart. Production `4.1.0-rc4` owns the
+preflight-recovery correction described below; rc5 owns the later active-job
+tape-out correction.
+
+On 2026-09-15, a natural 36 mm runout proved rc4 still failed active-job
+recovery: it captured `error1=0x02` but allowed the spooler timeout to expire
+and marked Container batch 348 `FAILED`. With V4 stopped and the Windows queue
+empty, installing the correct cassette caused Brother to resume the retained
+job and print both C037 copies without a new application submission. Candidate
+`4.1.0-rc5` pauses completion timeouts for recoverable media states so the same
+batch can finalize automatically after that retained-job recovery.
 
 ## Polling and Scheduling Contract
 
@@ -93,7 +102,7 @@ Its `LogonType: Password` execution can run without an interactive Windows
 desktop, so a normal worker-owned `MessageBoxW` is not reliable operator
 feedback.
 
-Candidate `4.1.0-rc4` sends a non-blocking informational notice to the active
+V4 sends a non-blocking informational notice to the active
 console through Windows Terminal Services. The notice states required and
 detected media. Automatic preflight recovery remains independent of whether
 the notice is dismissed or whether a console session is present.
@@ -137,11 +146,17 @@ every Display, Container, and Controller active spooler job. It records the
 initial raw packet, every change, five-second heartbeats, query errors/recovery,
 and a two-second post-spooler window in the batch log.
 
-The September 8 runout proved that fixed window insufficient. Candidate
+The September 8 runout proved that fixed window insufficient. Production
 `4.1.0-rc4` continues sampling after spooler clearing until ready/idle,
 end-of-media, another explicit error, or a bounded timeout. Preflight rejects
 Brother `phase != 0x00`, so later pending work cannot start while the
 Brother/driver is still completing or replaying the boundary label.
+
+The September 15 runout proved that the spooler may remain observed longer than
+the rc4 timeout while Brother waits for replacement tape. Candidate rc5 pauses
+the spooler and physical-completion clocks for end-of-media, cover-open,
+no-media, and wrong replacement media. Correct media resumes the retained job;
+V4 does not resubmit it.
 
 The existing V4 loop still submits multiple `PrintOut()` calls before waiting
 for the spooler. The sampler may therefore capture physical tape advancement
@@ -179,8 +194,8 @@ The FieldWiring application owns creating Wiring requests. LabelPrintService own
 - Location request-to-print pipeline;
 - Wiring request-to-print pipeline using the approved 12 mm fold-over format;
 - print-job dashboard;
-- deploy and verify `4.1.0-rc4` physical-terminal status capture, active-console
-  notice, and automatic correct-media recovery;
+- deploy and verify `4.1.0-rc5` same-batch tape-out recovery, active-console
+  notice, wrong-replacement-media wait, and no application-level resubmission;
 - capture any distinct low-tape/end-marker transition during a later natural
   runout;
 - safe stop-before-next-label behavior if a warning signature is found;

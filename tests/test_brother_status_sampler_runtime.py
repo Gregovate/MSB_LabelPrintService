@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 import unittest
 
@@ -22,6 +23,10 @@ END_OF_MEDIA_STATUS = bytearray(ACTIVE_STATUS)
 END_OF_MEDIA_STATUS[8] = 0x02
 END_OF_MEDIA_STATUS[18] = 0x02
 END_OF_MEDIA_STATUS = bytes(END_OF_MEDIA_STATUS)
+
+WRONG_WIDTH_STATUS = bytearray(ACTIVE_STATUS)
+WRONG_WIDTH_STATUS[10] = 36
+WRONG_WIDTH_STATUS = bytes(WRONG_WIDTH_STATUS)
 
 
 def changed_status() -> BrotherStatus:
@@ -45,6 +50,16 @@ class SequencedStatus:
         if isinstance(value, Exception):
             raise value
         return value
+
+
+class MutableStatus:
+    """Return a status that a recovery test can change over time."""
+
+    def __init__(self, status: BrotherStatus) -> None:
+        self.status = status
+
+    def __call__(self) -> BrotherStatus:
+        return self.status
 
 
 class BrotherStatusSamplerTests(unittest.TestCase):
@@ -205,6 +220,60 @@ class BrotherStatusSamplerTests(unittest.TestCase):
         sampler.stop()
 
         self.assertEqual(observation.outcome, "END_OF_MEDIA")
+
+    def test_pauses_physical_timeout_until_correct_media_is_ready(self) -> None:
+        ready = decode_brother_status(READY_STATUS)
+        active = decode_brother_status(ACTIVE_STATUS)
+        end_of_media = decode_brother_status(END_OF_MEDIA_STATUS)
+        wrong_width = decode_brother_status(WRONG_WIDTH_STATUS)
+        source = MutableStatus(ready)
+        messages: list[str] = []
+        sampler = BrotherStatusSampler(
+            context="retained job recovery",
+            read_status=source,
+            log_message=messages.append,
+            poll_interval_seconds=0.001,
+            heartbeat_seconds=0.05,
+            startup_timeout_seconds=0.1,
+            stop_timeout_seconds=0.1,
+        )
+
+        sampler.start()
+        source.status = end_of_media
+        time.sleep(0.005)
+
+        def replace_media() -> None:
+            time.sleep(0.03)
+            source.status = wrong_width
+            time.sleep(0.03)
+            source.status = active
+            time.sleep(0.005)
+            source.status = ready
+
+        replacement = threading.Thread(target=replace_media)
+        replacement.start()
+        try:
+            observation = sampler.wait_for_physical_completion(
+                timeout_seconds=0.02,
+                idle_stable_seconds=0.003,
+                recoverable_reason=lambda status: (
+                    "Recoverable media wait"
+                    if "End of media" in status.errors
+                    or status.media_width_mm != 24
+                    else None
+                ),
+            )
+        finally:
+            replacement.join()
+            sampler.stop()
+
+        self.assertEqual(observation.outcome, "READY_IDLE")
+        self.assertTrue(
+            any("PHYSICAL_WAIT_PAUSED" in item for item in messages)
+        )
+        self.assertTrue(
+            any("PHYSICAL_WAIT_RESUMED" in item for item in messages)
+        )
 
     def test_physical_completion_timeout_preserves_last_raw_status(self) -> None:
         ready = decode_brother_status(READY_STATUS)

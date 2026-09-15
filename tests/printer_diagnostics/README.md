@@ -64,9 +64,12 @@ Do not add print commands to the status probe. Any future direct-print experimen
 
 ## Production active-job observation
 
-V4 `4.1.0-rc4` uses `brother_status_sampler_runtime.py` to query the Brother
+V4 uses `brother_status_sampler_runtime.py` to query the Brother
 SNMP status OID throughout active PT-P950NW Display, Container, and Controller
 jobs. That production observer writes to the correlated batch log; it is not a
 replacement for this isolated direct-status diagnostic harness. Its current
-role is evidence capture only for the unidentified low-tape racing-stripe
-transition. It does not interpret unknown bytes or stop printing.
+role remains evidence capture for the unidentified low-tape racing-stripe
+transition. Candidate `4.1.0-rc5` additionally uses already-proven media states
+to pause an active job's completion timeout until the correct cassette is
+installed. It does not interpret unknown bytes as low tape or submit another
+application-level job during recovery.

@@ -2,9 +2,9 @@
 
 | Document Control | Value |
 |---|---|
-| Status | PRE-RELEASE — use for v4 acceptance/training only until v4 is deployed |
+| Status | CURRENT — rc4 production / rc5 recovery candidate |
 | System | PRINT-SERVER / MSB Label Print Service v4 |
-| Last Updated | 2026-09-08 |
+| Last Updated | 2026-09-15 |
 | Related Engineering Contract | `docs/01_Engineering/Label_Service_v4_Architecture_and_Acceptance.md` |
 
 ## Purpose
@@ -58,7 +58,7 @@ states both required and detected media.
 
 ### Hold/cancel behavior
 
-Candidate `4.1.0-rc4` does not put a Cancel button in the informational notice.
+The V4 informational notice does not contain a Cancel button.
 Dismissal must not silently cancel a database-owned request. A durable Hold or
 Cancel action belongs in the operator application/dashboard and remains a
 separate capability.
@@ -133,12 +133,16 @@ If v4 displays a queue-intervention notice:
 
 Tape-out is different from preflight because an execution batch already exists and some labels may already have physically printed.
 
-Candidate `4.1.0-rc4` keeps sampling after the Windows spooler clears until
-Brother reaches ready/idle or reports a terminal error. When it detects Brother
-**End of media** after all b-PAC submissions and the observed Windows job have
-completed, it records the terminal packet and finalizes that submitted batch.
-It then leaves later requests pending and displays an informational notice such
-as:
+Production `4.1.0-rc4` samples Brother status during the active job, but the
+September 15 Container batch 348 incident proved that it can still mark a batch
+`FAILED` when its 90-second spooler timeout expires while Brother is retaining
+the job for replacement tape. That behavior does not meet automatic-recovery
+requirements.
+
+Candidate `4.1.0-rc5` treats **End of media**, cover open, no media, and wrong
+replacement media as recoverable pauses. It keeps the same submitted Brother
+job authoritative, pauses the spooler and physical-completion timeout clocks,
+and displays an informational notice such as:
 
 ```text
 MSB Label Service
@@ -162,16 +166,24 @@ Printing will resume automatically.
 
 ### Automatic resume behavior
 
-Before starting the next batch, the service rechecks:
+During the retained job, the service rechecks:
 
 - printer reachability;
 - correct cassette width/type;
 - cover state;
 - printer readiness.
 
-The service must also confirm Brother `phase=0x00`. This prevents a new batch
-from starting while the printer/driver is replaying the boundary label from the
-replacement cassette.
+The service does not create a new database batch or call b-PAC again. If the
+replacement cassette is wrong, the timeout remains paused and the notice
+changes to show required and detected media. When the correct cassette is
+installed, Brother resumes its retained job. V4 waits for the observed spooler
+job to clear and then confirms Brother `phase=0x00` before finalizing the
+original batch.
+
+Leave the Scheduled Task and V4 worker running during this normal recovery.
+Stopping or restarting V4 discards the in-memory observation context and turns
+the event into an exceptional reconciliation case. It must not be part of the
+routine cassette-replacement procedure.
 
 ### Boundary-label rule
 
@@ -183,6 +195,26 @@ installed. That one boundary replay is acceptable.
 The Label Service must not submit an additional application-level copy. The
 completed source request must remain cleared while later pending requests wait
 for correct replacement media.
+
+### September 15 Container evidence
+
+Container batch 348 submitted two `C037` copies on 36 mm tape. The sampler
+captured `error1=0x02` while spooler job 2 remained active. One label emerged
+before tape-out but was unusable. Rc4 timed out and incorrectly marked the
+batch `FAILED`.
+
+With V4 stopped and the Windows queue empty, installing a new 36 mm cassette
+caused Brother to resume the retained original job and produce two complete
+C037 labels. No V4 submission caused that recovery. The database batch was
+then reconciled once as `COMPLETED` with two physical labels.
+
+This proves:
+
+- an empty Windows queue does not prove the Brother job is gone;
+- do not delete/retry a tape-out batch merely because the queue appears empty;
+- normal recovery must wait for the correct cassette and let Brother resume;
+- no manual SQL should be required after rc5 passes controlled physical
+  acceptance.
 
 ### If automatic recovery does not occur
 
@@ -223,7 +255,7 @@ For tape-out, the batch log should identify the exact sequence number, asset ID/
 ## PRINT-SERVER Notice Delivery
 
 The production worker remains a headless password-logon Scheduled Task.
-Candidate `4.1.0-rc4` uses Windows Terminal Services to send a non-blocking
+V4 uses Windows Terminal Services to send a non-blocking
 message to the active physical console session. The message is informational;
 printing recovery must not depend on the operator clicking it.
 
@@ -247,3 +279,10 @@ worker remains in Session 0.
 - `Print_Server_Runtime_Runbook.md`
 - `Operator_Label_Printing.md`
 - `../01_Engineering/Label_Service_v4_Architecture_and_Acceptance.md`
+
+## Revision History
+
+| Date | Change |
+|---|---|
+| 2026-09-15 | Recorded Container batch 348 natural 36 mm tape-out, rc4 spooler-timeout failure, Brother retained-job replay after cassette replacement, and rc5 same-batch automatic-recovery procedure. |
+| 2026-09-08 | Added rc4 automatic preflight recovery, active-console notice, and physical-terminal sampling procedure. |

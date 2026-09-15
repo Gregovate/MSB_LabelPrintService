@@ -4,17 +4,18 @@ The MSB Label Print Service is the Windows-side printing subsystem that converts
 
 ## Current State
 
-**Status: V4 OPERATIONAL / CONTROLLER CONSUMER ACCEPTED / RC4 PRINTER-RECOVERY CANDIDATE IN ENGINEERING**
+**Status: V4 OPERATIONAL / CONTROLLER CONSUMER ACCEPTED / RC5 ACTIVE-TAPE-OUT RECOVERY CANDIDATE IN ENGINEERING**
 
 Current source baseline:
 
 ```text
 Repository: Gregovate/MSB_LabelPrintService
-Production/main baseline: baf5389550ce5514467da909848e7b1dafdb7de6
-Engineering branch: agent/automatic-media-recovery
+Production/main baseline: b76bfa18119b596d53294456efdb5c1d03af0e19
+Engineering branch: fix/active-tapeout-same-batch-recovery
 Production service source: label_poll_service_v4.py
-Production version before this candidate: 4.1.0-rc3
-Current engineering candidate: 4.1.0-rc4
+Production version before this candidate: 4.1.0-rc4
+Current engineering candidate: 4.1.0-rc5
+Reviewed rc5 runtime commit: d4c29e8613f38837a16bece9b9056e0c2ff62dac
 ```
 
 V3.4 remains the preserved rollback path and must never run concurrently with
@@ -238,10 +239,26 @@ Current V4 behavior includes:
 - failed-batch persistence and repeated-print-storm protection introduced in v3.3;
 - rotating service logs introduced in v3.4.
 
-Candidate `4.1.0-rc4` adds automatic correct-media recovery, non-blocking
+Production `4.1.0-rc4` adds automatic preflight recovery, non-blocking
 required/detected-media notices to the active Windows console, Brother physical
 terminal-state sampling after spooler clearing, and a preflight guard that
 prevents a new batch while Brother remains in an active phase.
+
+The September 15 natural 36 mm tape-out proved that rc4 still counted its
+90-second spooler timeout while Brother was legitimately retaining a submitted
+job for replacement media. It therefore marked Container batch 348 `FAILED`
+even though installing the new cassette later caused Brother to resume the
+original job and print both C037 labels without another V4 submission.
+
+Candidate `4.1.0-rc5` pauses spooler and physical-completion timeouts during
+known recoverable media states, keeps the original Brother job authoritative,
+reports required/detected media, and finalizes the same batch after the correct
+cassette is installed and physical completion is observed. It does not create
+another application-level print job during recovery.
+
+Normal cassette replacement requires no SQL, request reset, or service restart.
+The worker must remain running so it can preserve the observed-job context;
+stopping it during an active retained job remains an exceptional recovery case.
 
 Do not weaken the failed-batch, queue, spooler-verification, transaction, or retry safeguards during recovery work.
 
