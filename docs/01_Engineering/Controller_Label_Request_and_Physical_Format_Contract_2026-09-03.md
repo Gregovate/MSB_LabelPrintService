@@ -9,7 +9,7 @@
 | Controlling Issue | [LabelPrintService #18](https://github.com/Gregovate/MSB_LabelPrintService/issues/18) |
 | Pull Requests | [LabelPrintService #22](https://github.com/Gregovate/MSB_LabelPrintService/pull/22), [#23](https://github.com/Gregovate/MSB_LabelPrintService/pull/23) |
 | Accepted Controller Version | `4.1.0-rc2` |
-| Current Shared Candidate | `4.1.0-rc4` |
+| Current Shared Candidate | `4.1.0-rc5` |
 
 ## Purpose
 
@@ -167,9 +167,13 @@ scan-field autofocus is an application UI concern, not a label payload defect.
 Shared candidate `4.1.0-rc3` added observation-only PT-P950NW status sampling to
 Controller, Display, and Container jobs. It does not change the accepted
 Controller payload, rendering, snapshot, or finalization contract and it is not
-an automatic low-tape stop rule. Candidate `4.1.0-rc4` extends sampling through
+an automatic low-tape stop rule. Production `4.1.0-rc4` extends sampling through
 Brother physical idle or a reported terminal error and adds automatic preflight
-media recovery without changing that governed Controller contract.
+media recovery without changing that governed Controller contract. Candidate
+`4.1.0-rc5` pauses active-job completion timeouts during proven recoverable
+media states so the retained Brother job can resume after cassette replacement;
+it likewise does not change Controller identity, quantity, or database
+finalization semantics.
 
 ## Pending-Request Safety Check
 

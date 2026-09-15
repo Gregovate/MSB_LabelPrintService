@@ -52,6 +52,36 @@ Do not copy the Controller 1031 recovery SQL blindly. Every recovery must be
 guarded by the actual batch/item IDs and inspected state so it cannot increment
 history twice or clear an unrelated request.
 
+### Brother retained job after the Windows queue appears empty
+
+The September 15 Container batch 348 tape-out proved that a submitted Brother
+job can remain recoverable inside the Brother/driver path even after V4 has
+marked the batch `FAILED`, V4 is stopped, and `Get-PrintJob` reports an empty
+Windows queue.
+
+For batch 348:
+
+- two C037 copies were submitted in one spooler job;
+- one pre-runout label emerged but was unusable and discarded;
+- the sampler captured 36 mm `error1=0x02` while the spooler job remained
+  observed;
+- rc4 incorrectly expired the 90-second spooler timeout and marked the batch
+  `FAILED`;
+- installing a correct replacement cassette caused Brother to resume the
+  retained job and print two complete C037 labels without a new V4 process or
+  application submission.
+
+Therefore, an empty Windows queue is not sufficient permission to delete and
+retry a tape-out batch. Preserve the batch and printer state until cassette
+replacement proves whether Brother will resume the original submission.
+
+If the retained job produces the complete required usable quantity, reconcile
+the exact original batch as completed once. Preserve the original failure and
+recovery explanation in batch notes, mark only its frozen items printed, clear
+only their source requests, and update cached history once. If the retained job
+does not produce a complete usable quantity, stop for item/copy-level
+reconciliation; do not guess or submit the full batch again.
+
 ## 1. Check Whether the Label Service Is Running
 
 On `PRINT-SERVER` PowerShell:
@@ -464,5 +494,6 @@ FAILED batch reported
 
 | Date | Change |
 |---|---|
+| 2026-09-15 | Added the batch 348 retained-Brother-job rule: an empty Windows queue does not prove a tape-out job was discarded; wait for cassette replacement and reconcile the original batch if its complete usable quantity resumes. |
 | 2026-08-27 | Corrected recovery order from live batches 355–357: diagnose and correct the cause before retiring a failed batch; documented the repeated 356 failure and successful 357 acceptance; added explicit SSH -> Docker -> psql entry; aligned template documentation to root-level printer-specific folders and separated template-design CSVs from runtime-generated CSVs. |
 | 2026-08-27 | Initial controlled recovery SOP. |

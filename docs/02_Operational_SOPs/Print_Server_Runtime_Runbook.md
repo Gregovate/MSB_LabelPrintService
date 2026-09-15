@@ -8,7 +8,7 @@
 | Audience | MSB Database Administrator / Print Server Maintainer |
 | Status | CURRENT |
 | Owner | MSB Database Administrator |
-| Last Reviewed | 2026-09-08 |
+| Last Reviewed | 2026-09-15 |
 | Keywords | label print service, LOR runner, print server, PRINT-SERVER, Brother, PT-P950NW, b-PAC, SSH, OpenSSH, Task Scheduler, reboot, recovery |
 
 ## Purpose
@@ -26,7 +26,8 @@ configuration, logs, or recovery actions.
 
 ## Current Production Runtime
 
-Verified application state before the `4.1.0-rc4` deployment on 2026-09-08:
+Verified application state after the September 15 tape-out incident and before
+the `4.1.0-rc5` deployment:
 
 ```text
 Windows hostname: PRINT-SERVER
@@ -35,10 +36,11 @@ Windows account: PRINT-SERVER\Print Service
 Production working directory: C:\MSB_LabelService
 Production Python: C:\Program Files\Python\python.exe
 Current service script: C:\MSB_LabelService\label_poll_service_v4.py
-Current deployed version: 4.1.0-rc3
-Current deployed Git commit: 5d4a626
-Approved rc4 merge commit: 6ba488fd5c4df88fa66941f3c304c20c71e9ab1f
-Approved rc4 version: 4.1.0-rc4
+Current deployed version: 4.1.0-rc4
+Current deployed Git commit: b76bfa18119b596d53294456efdb5c1d03af0e19
+Current task state: intentionally stopped after batch 348 reconciliation
+Reviewed rc5 runtime commit: d4c29e8613f38837a16bece9b9056e0c2ff62dac
+Candidate version: 4.1.0-rc5
 Legacy manual launcher: C:\start_label_service.bat
 Brother printer queue: Brother PT-P950NW
 Brother printer port: 192.168.5.12_1
@@ -84,7 +86,8 @@ Get-Content C:\MSB_LabelService\logs\label_service.log -Tail 30
 Proceed only when:
 
 - Git is on `main` with no modified/untracked files;
-- exactly one V4 process is running and no V3 process exists;
+- either exactly one V4 process is running, or the Scheduled Task is already
+  intentionally stopped with no V3/V4 process after a controlled recovery;
 - both Windows print queues are empty;
 - the recent service log shows zero pending Display, Container, and Controller
   requests and no active error/traceback.
@@ -121,39 +124,41 @@ $labelServiceRollbackCommit = git rev-parse HEAD
 git pull --ff-only origin main
 ```
 
-Inspect the update and prove that the reviewed rc4 runtime is present without
+Inspect the update and prove that the reviewed rc5 runtime is present without
 later changes to its executable modules:
 
 ```powershell
 git status --short --branch
 git rev-parse HEAD
 
-$reviewedRc4Commit = "6ba488fd5c4df88fa66941f3c304c20c71e9ab1f"
-git merge-base --is-ancestor $reviewedRc4Commit HEAD
+$reviewedRc5Commit = "d4c29e8613f38837a16bece9b9056e0c2ff62dac"
+git merge-base --is-ancestor $reviewedRc5Commit HEAD
 if ($LASTEXITCODE -ne 0) {
-    throw "Reviewed rc4 commit is not contained in the deployed checkout."
+    throw "Reviewed rc5 commit is not contained in the deployed checkout."
 }
 
-git diff --exit-code $reviewedRc4Commit HEAD -- `
+git diff --exit-code $reviewedRc5Commit HEAD -- `
+    active_print_recovery_runtime.py `
     label_poll_service_v4.py `
     v4_preflight_runtime.py `
     brother_status_runtime.py `
     brother_status_sampler_runtime.py `
     spooler_observer_runtime.py
 if ($LASTEXITCODE -ne 0) {
-    throw "Runtime files differ from the reviewed rc4 commit."
+    throw "Runtime files differ from the reviewed rc5 commit."
 }
 ```
 
-The checkout HEAD may be newer than `6ba488f` because documentation-only
-commits can follow the rc4 merge. Do not start the service unless the pull was
-a clean fast-forward, the reviewed rc4 commit is an ancestor, and the runtime
-file comparison returns no differences.
+The checkout HEAD may be newer than `d4c29e8` because documentation-only
+commits can follow the rc5 runtime commit. Do not start the service unless the
+pull was a clean fast-forward, the reviewed rc5 commit is an ancestor, and the
+runtime file comparison returns no differences.
 
 ### 4. Compile the deployed runtime
 
 ```powershell
 & "C:\Program Files\Python\python.exe" -m py_compile `
+    .\active_print_recovery_runtime.py `
     .\label_poll_service_v4.py `
     .\v4_preflight_runtime.py `
     .\brother_status_runtime.py `
@@ -164,7 +169,7 @@ file comparison returns no differences.
 No output is expected. On any compile error, leave the task stopped and follow
 the rollback section.
 
-### 5. Start and verify exactly one rc4 worker
+### 5. Start and verify exactly one rc5 worker
 
 ```powershell
 Start-ScheduledTask -TaskName "MSB Label Service"
@@ -180,17 +185,17 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
     Select-Object ProcessId,SessionId,CommandLine
 
 Get-Content C:\MSB_LabelService\logs\label_service.log -Tail 50 |
-    Select-String "4.1.0-rc4|Pending labels|No pending labels|ERROR|Traceback"
+    Select-String "4.1.0-rc5|Pending labels|No pending labels|ERROR|Traceback"
 ```
 
 Expected:
 
 - exactly one `label_poll_service_v4.py` process;
-- startup banner `MSB Label Service 4.1.0-rc4`;
+- startup banner `MSB Label Service 4.1.0-rc5`;
 - a successful poll with the expected pending counts;
 - no `ERROR` or traceback.
 
-### Rollback after a failed rc4 startup
+### Rollback after a failed rc5 startup
 
 Use only the commit captured in `$labelServiceRollbackCommit` by this
 procedure. Do not clear the spooler or alter PostgreSQL as part of source
@@ -202,7 +207,7 @@ git switch --detach $labelServiceRollbackCommit
 ```
 
 Re-run the compilation command for the files present at that commit, start the
-Scheduled Task, and verify the restored version/process/log. Preserve the rc4
+Scheduled Task, and verify the restored version/process/log. Preserve the rc5
 failure output for engineering review. Return the checkout to reviewed `main`
 only through a later controlled deployment.
 
@@ -945,6 +950,7 @@ Before clearing the spooler:
 
 | Date | Change |
 |---|---|
+| 2026-09-15 | Added the controlled rc5 deployment gate for reviewed runtime commit `d4c29e8`, including the new active-print recovery module, and recorded rc4 as the current pre-deployment production baseline. |
 | 2026-09-08 | Corrected the rc4 verification gate so later documentation-only merges do not invalidate deployment: the reviewed rc4 commit must be an ancestor and the executable runtime files must match it exactly. |
 | 2026-09-08 | Corrected the active Scheduled Task/runtime references to V4 and added the controlled Git-backed V4 application update, verification, and rollback procedure required before deploying `4.1.0-rc4`. |
 | 2026-08-25 | Corrected the false Session-0 Google Drive conclusion; recorded required Print Service autologon, completed V1.6.0 production cutover, reboot/parser/ingest/Run 13 acceptance, and the remaining G: readiness limitation. |

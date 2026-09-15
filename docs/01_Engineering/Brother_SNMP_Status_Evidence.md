@@ -6,7 +6,7 @@
 | System | MSB Label Print Service / PRINT-SERVER |
 | Printers | PT-P950NW and QL-820NWB |
 | Status | CURRENT — recovered bench evidence plus production natural-runout evidence |
-| Last Reviewed | 2026-09-08 |
+| Last Reviewed | 2026-09-15 |
 | Controlling Issue | [#19](https://github.com/Gregovate/MSB_LabelPrintService/issues/19) |
 
 ## Purpose
@@ -118,9 +118,53 @@ Database safety succeeded. The completed batch was not re-requested, the 13
 later pending Controllers remained requested, and a controlled service restart
 printed exactly those 13 without a database reset or a third `CTRL:1098`.
 
+### 2026-09-15 production 36 mm runout — Container batch 348
+
+Container batch 348 submitted two horizontal `C037` copies through one Windows
+spooler job. The initial Brother packet reported ready 36 mm laminated tape:
+
+```text
+80 20 42 30 70 30 04 00 00 00 24 01 00 00 00 00 00 00 00 00 00 00 00 00 01 08 00 00 00 00 00 00
+```
+
+At `2026-09-15 10:40:53`, while spooler job 2 remained observed, the sampler
+captured the natural tape-out transition:
+
+```text
+error1=0x02 status=0x02 phase=0x01 errors='End of media'
+80 20 42 30 70 30 04 00 02 00 24 01 00 00 00 00 00 00 02 01 00 00 00 00 01 08 00 00 00 00 00 00
+```
+
+The sampler retained that state through 344 samples. Rc4 nevertheless allowed
+the spooler-clear timeout to keep counting and marked batch 348 `FAILED` after
+90 seconds with:
+
+```text
+Observed spooler job(s) did not clear within 90 seconds: [2]
+```
+
+Physical and runtime evidence then established a critical boundary:
+
+- one pre-runout C037 label emerged but was unusable and discarded;
+- V4 was stopped and the Windows queue reported no jobs;
+- the exhausted cassette was removed and the cover remained open;
+- installing a fresh 36 mm cassette caused the Brother/driver to resume the
+  retained original job and print two complete C037 labels;
+- no new V4 process or application-level submission caused those labels;
+- the empty Windows queue therefore did **not** prove that Brother had discarded
+  the submitted job;
+- batch 348 was reconciled as `COMPLETED`, its one logical item was recorded as
+  two successful physical Container labels, and `ref.container.print_label`
+  was cleared without another application submission.
+
+This event proves that fully exhausted media is a recoverable pause for the
+already-submitted Brother job. It must suspend the spooler and physical wait
+timeouts rather than convert the batch to `FAILED` while the printer is waiting
+for replacement media.
+
 ### Active-job sampler behavior
 
-V4 `4.1.0-rc3` added an observation-only PT-P950NW status sampler to every
+V4 `4.1.0-rc3` added a PT-P950NW status sampler to every
 Display, Container, and Controller b-PAC job. It starts before `StartPrint`,
 continues while the Windows spooler job is active, and remains active for two
 seconds after the observed job clears. The default interval is 250 ms with an
@@ -138,13 +182,13 @@ The batch log records:
 
 Every sample retains width, media type, both error bytes, status type, phase,
 notification byte, decoded known errors, and the complete raw value. The
-sampler does not interpret an unknown byte as low tape, stop submission, clear
-requests, or alter batch state. Its only purpose in this candidate is to
-capture the racing-stripe transition so a later change can be based on physical
-evidence.
+sampler does not interpret an unknown byte as low tape or stop submission.
+Candidate rc5 does use already-proven media states—end of media, cover open, no
+media, wrong width, and wrong type—to pause completion timeouts around the
+retained job. Unknown transitions remain evidence-only.
 
 The September 8 event proved that the original fixed post-spooler window was
-not sufficient. Candidate `4.1.0-rc4` removes that timer. After the observed
+not sufficient. Production `4.1.0-rc4` removed that timer. After the observed
 Windows job clears, the sampler continues until Brother reports one of these
 physical terminal conditions:
 
@@ -158,9 +202,15 @@ be accepted. A new preflight also rejects `phase != 0x00`, preventing the next
 batch from starting while the Brother/driver is still physically completing or
 replaying the prior label.
 
-Unknown raw-byte transitions remain evidence-only. Candidate `4.1.0-rc4` does
-not invent a low-tape code or submit an application-level copy of the boundary
-label.
+The September 15 event then proved that rc4 could fail before reaching that
+post-spooler logic when the observed job remained queued for replacement media.
+Candidate `4.1.0-rc5` pauses both the spooler-clear timeout and the later
+physical-completion timeout for known recoverable media conditions. It waits
+for the correct cassette, retained-job completion, and ready/idle before
+finalizing the same database batch.
+
+Unknown raw-byte transitions remain evidence-only. Rc5 does not invent a
+low-tape code or submit an application-level copy of the boundary label.
 
 ### No cassette, cover closed
 
@@ -304,11 +354,19 @@ Two operator-labeled P950 tests (cover open and empty 36 mm cassette) accidental
 10. Active-job sampling is an evidence mechanism, not an approved automatic
     stop rule. No changed byte becomes a stop condition until a controlled
     physical runout proves its meaning and timing.
+11. A known `error1=0x02` active-job tape-out is a recoverable wait state, not
+    proof of batch failure. Completion timeouts must pause while Brother retains
+    the submitted job, and an empty Windows queue must not trigger a duplicate
+    application submission.
 
 During later V4 acceptance, a pending 36 mm Container with 24 mm laminated tape returned the same proven 24 mm ready status value. Preflight correctly blocked printing. The operator initially reported no visible dialog and later found it buried behind six windows, confirming that worker-owned desktop dialogs were not an acceptable notification path.
 
 During the September 8 production runout, the worker logged
 `PREFLIGHT_DIALOG_OPEN` from Session 0 but no message appeared on the
 PRINT-SERVER console. The worker then blocked indefinitely until it was
-manually restarted. Candidate `4.1.0-rc4` removes that blocking call and uses a
+manually restarted. Production `4.1.0-rc4` removes that blocking call and uses a
 non-blocking Windows Terminal Services notice plus automatic preflight recheck.
+The September 15 evidence separately proved that rc4 did not recover an active
+job whose spooler timeout expired during tape-out. Candidate rc5 adds that
+same-batch retained-job recovery; it does not claim to identify the earlier
+racing-stripe warning.
