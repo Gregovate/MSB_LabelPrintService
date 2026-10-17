@@ -10,8 +10,8 @@
    Rules:
      - container_test_status_id = 2 = In Progress
      - only displays with ref.display.label_required = true
-     - split after second hyphen only when full display_name exceeds
-       20 characters
+     - split after the second hyphen whenever the standard naming structure
+       is present; total character count does not select the physical layout
      - source tables:
          ops.test_session
          ops.display_test_session
@@ -31,14 +31,12 @@ SELECT
   'https://db.sheboyganlights.org/scan/DISP/' || d.display_id AS qr_url,
 
   CASE
-    WHEN LENGTH(d.display_name) <= 20 THEN d.display_name
     WHEN d.display_name ~ '^[^-]+-[^-]+-'
       THEN split_part(d.display_name, '-', 1) || '-' || split_part(d.display_name, '-', 2)
     ELSE d.display_name
   END AS line1,
 
   CASE
-    WHEN LENGTH(d.display_name) <= 20 THEN ''
     WHEN d.display_name ~ '^[^-]+-[^-]+-'
       THEN SUBSTRING(
         d.display_name
