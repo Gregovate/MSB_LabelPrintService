@@ -82,6 +82,31 @@ only their source requests, and update cached history once. If the retained job
 does not produce a complete usable quantity, stop for item/copy-level
 reconciliation; do not guess or submit the full batch again.
 
+### Retained job has incorrect application output
+
+The 2026-10-17 Display batch 385 incident is a distinct recovery case. The
+application submitted 23 labels through the one-line 36 mm template even
+though all 23 standard names required the compact 24 mm profile. Five
+incorrect complete labels emerged before tape-out and the sixth carried the
+green/racing-stripe end marker. They were unusable and did not count as
+successful physical output.
+
+In this condition, do not install tape and let Brother resume the bad job.
+Follow the printer-recovery SOP's wrong-retained-job exception: stop V4,
+preserve logs, cancel the retained job with the printer Power button, correct
+and deploy the application defect, and inspect the frozen batch before any
+database change. Retire and retry the original batch only after proving that:
+
+- the retained Brother job was canceled;
+- both Windows queues are empty;
+- all bad physical output was rejected and will be reprinted;
+- all batch items remain unfinalized;
+- all corresponding source request flags remain pending;
+- the corrected snapshot produces the intended render values.
+
+This is not permission to delete a partially successful batch. If any physical
+label is accepted as usable, stop for item-level reconciliation instead.
+
 ## 1. Check Whether the Label Service Is Running
 
 On `PRINT-SERVER` PowerShell:
