@@ -232,7 +232,7 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc6"
+SERVICE_VERSION = "4.1.0-rc7"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
