@@ -185,8 +185,9 @@ Conceptually:
 ```text
 assigned QR_36MM_HORIZONTAL
     -> inspect text
-    -> short enough: QR_label_1_line_horz_36mm.lbx
-    -> longer: choose safe split and use QR_label_2_line_horz_36mm.lbx
+    -> standard two-hyphen structure: split after segment two
+       and use QR_label_2_line_horz_36mm.lbx
+    -> no standard split structure: QR_label_1_line_horz_36mm.lbx
 ```
 
 The same applies to the 24 mm horizontal family.
@@ -194,18 +195,33 @@ The same applies to the 24 mm horizontal family.
 For the current Display label population, the accepted v4 compatibility rule preserves the established production split behavior:
 
 ```text
-display_name length <= 20
-    -> one-line template
-
-display_name length > 20
-AND the name contains at least two leading hyphen-delimited segments
+display_name contains at least two leading hyphen-delimited segments
     -> split after the second segment
     -> two-line template
 
-display_name length > 20
-AND that two-hyphen structure is absent
+that two-hyphen structure is absent
     -> keep the complete name on the one-line template
 ```
+
+The 2026-10-17 production incident proved that character count is not a valid
+layout selector. Short standard names including `GG-Elden-20-03` and
+`GG-Elden-20-04` were incorrectly routed to the one-line 36 mm template,
+producing wasteful long labels. From `4.1.0-rc6` onward, the standard name
+structure selects two-line rendering regardless of total character count.
+
+The same incident established a physical acceptance limit: a Display identity
+label should not exceed approximately six inches. One-line rendering is valid
+when it remains readable and within that limit; line count is not itself the
+business requirement. Because the Brother templates use automatic tape length,
+nominal template geometry is not sufficient proof. Each Display profile and
+layout variant requires a physical maximum-length acceptance test.
+
+Batch 385 contained 23 `GG-*` Displays assigned to the 36 mm family. Five
+complete but unacceptable labels emerged at roughly one foot each, and the
+sixth label carried the green/racing-stripe end marker. The immediate recovery
+uses the existing 24 mm two-line profile, whose nominal layout is about 3.3
+inches, and requires a one-label physical proof before the remaining batch is
+released. This does not mass-convert unrelated Displays to 24 mm.
 
 The 2026-08-31 profile found 107 Display names over 20 characters. 103 follow the established two-hyphen split structure. Three confirmed valid long names intentionally remain one-line:
 
@@ -222,8 +238,9 @@ The purpose of the one-line/two-line selection is to avoid printing hundreds of 
 ### Safe split behavior
 
 - preserve the exact Display name content;
-- use the established second-hyphen split where the naming structure supports it;
+- use the established second-hyphen split wherever the naming structure supports it, regardless of total character count;
 - allow the confirmed valid long exceptions above to remain one-line;
+- keep physical Display output at or below the approximately six-inch accepted maximum;
 - snapshot the final `line1`/`line2` values used for the batch;
 - once the batch is created, the frozen render intent must not be silently recomputed from later source edits.
 
