@@ -223,6 +223,14 @@ uses the existing 24 mm two-line profile, whose nominal layout is about 3.3
 inches, and requires a one-label physical proof before the remaining batch is
 released. This does not mass-convert unrelated Displays to 24 mm.
 
+The first controlled 24 mm recovery attempt on 2026-10-17 exposed a separate
+template defect before a new batch was created. The tracked
+`QR_label_2_line_horz_24mm.lbx` contained two objects named `objLine1` and no
+`objLine2`. Rc6 preflight correctly blocked printing, sent the active-console
+notice, and left Display 637 pending. Candidate `4.1.0-rc7` renames the lower
+text object to `objLine2` and adds a regression test that opens the real `.lbx`
+archive and requires the distinct `objQr`, `objLine1`, and `objLine2` contract.
+
 The 2026-08-31 profile found 107 Display names over 20 characters. 103 follow the established two-hyphen split structure. Three confirmed valid long names intentionally remain one-line:
 
 ```text

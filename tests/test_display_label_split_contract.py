@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import ast
 import unittest
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICE_SOURCE = ROOT / "label_poll_service_v4.py"
 SQL_DIR = ROOT / "sql"
+TEMPLATE_DIR = ROOT / "templates" / "pt_p950nw"
 
 
 def expected_split(display_name: str) -> tuple[str, str]:
@@ -21,6 +24,25 @@ def expected_split(display_name: str) -> tuple[str, str]:
 
 
 class DisplayLabelSplitContractTests(unittest.TestCase):
+    def test_24mm_two_line_template_has_distinct_required_objects(self) -> None:
+        template_path = TEMPLATE_DIR / "QR_label_2_line_horz_24mm.lbx"
+
+        with zipfile.ZipFile(template_path) as template:
+            label_xml = template.read("label.xml")
+
+        root = ElementTree.fromstring(label_xml)
+        object_names = [
+            element.attrib["objectName"]
+            for element in root.iter()
+            if "objectName" in element.attrib
+        ]
+
+        self.assertCountEqual(
+            object_names,
+            ["objQr", "objLine1", "objLine2"],
+        )
+        self.assertEqual(len(object_names), len(set(object_names)))
+
     def test_short_standard_names_are_two_line(self) -> None:
         self.assertEqual(
             expected_split("GG-Elden-20-03"),
