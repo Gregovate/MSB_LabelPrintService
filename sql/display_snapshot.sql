@@ -22,14 +22,12 @@ SELECT
     'https://db.sheboyganlights.org/scan/DISP/' || d.display_id AS qr_url,
 
     CASE
-      WHEN LENGTH(d.display_name) <= 20 THEN d.display_name
       WHEN d.display_name ~ '^[^-]+-[^-]+-'
         THEN split_part(d.display_name, '-', 1) || '-' || split_part(d.display_name, '-', 2)
       ELSE d.display_name
     END AS line1,
 
     CASE
-      WHEN LENGTH(d.display_name) <= 20 THEN ''
       WHEN d.display_name ~ '^[^-]+-[^-]+-'
         THEN SUBSTRING(
           d.display_name
