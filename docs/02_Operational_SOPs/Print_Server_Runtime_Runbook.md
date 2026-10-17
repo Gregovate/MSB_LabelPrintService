@@ -26,8 +26,8 @@ configuration, logs, or recovery actions.
 
 ## Current Production Runtime
 
-Verified application state after the September 15 tape-out incident and before
-the `4.1.0-rc5` deployment:
+Verified application state at the October 17 Display-layout incident and before
+the `4.1.0-rc6` deployment:
 
 ```text
 Windows hostname: PRINT-SERVER
@@ -36,11 +36,11 @@ Windows account: PRINT-SERVER\Print Service
 Production working directory: C:\MSB_LabelService
 Production Python: C:\Program Files\Python\python.exe
 Current service script: C:\MSB_LabelService\label_poll_service_v4.py
-Current deployed version: 4.1.0-rc4
-Current deployed Git commit: b76bfa18119b596d53294456efdb5c1d03af0e19
-Current task state: intentionally stopped after batch 348 reconciliation
-Reviewed rc5 runtime commit: d4c29e8613f38837a16bece9b9056e0c2ff62dac
-Candidate version: 4.1.0-rc5
+Current deployed version: 4.1.0-rc5
+Current deployed Git commit: 57275592a2ff70f1247f4fd40c7e40e823bd88b8
+Current task state: intentionally stopped during Display batch 385 recovery
+Reviewed rc6 runtime commit: fa7d656f858cfee2fd2d8eee80cec96b3cab4670
+Candidate version: 4.1.0-rc6
 Legacy manual launcher: C:\start_label_service.bat
 Brother printer queue: Brother PT-P950NW
 Brother printer port: 192.168.5.12_1
@@ -124,34 +124,35 @@ $labelServiceRollbackCommit = git rev-parse HEAD
 git pull --ff-only origin main
 ```
 
-Inspect the update and prove that the reviewed rc5 runtime is present without
+Inspect the update and prove that the reviewed rc6 runtime is present without
 later changes to its executable modules:
 
 ```powershell
 git status --short --branch
 git rev-parse HEAD
 
-$reviewedRc5Commit = "d4c29e8613f38837a16bece9b9056e0c2ff62dac"
-git merge-base --is-ancestor $reviewedRc5Commit HEAD
+$reviewedRc6Commit = "fa7d656f858cfee2fd2d8eee80cec96b3cab4670"
+git merge-base --is-ancestor $reviewedRc6Commit HEAD
 if ($LASTEXITCODE -ne 0) {
-    throw "Reviewed rc5 commit is not contained in the deployed checkout."
+    throw "Reviewed rc6 commit is not contained in the deployed checkout."
 }
 
-git diff --exit-code $reviewedRc5Commit HEAD -- `
+git diff --exit-code $reviewedRc6Commit HEAD -- `
     active_print_recovery_runtime.py `
     label_poll_service_v4.py `
     v4_preflight_runtime.py `
     brother_status_runtime.py `
     brother_status_sampler_runtime.py `
-    spooler_observer_runtime.py
+    spooler_observer_runtime.py `
+    sqldisplay_snapshot_v4.sql
 if ($LASTEXITCODE -ne 0) {
-    throw "Runtime files differ from the reviewed rc5 commit."
+    throw "Runtime files differ from the reviewed rc6 commit."
 }
 ```
 
-The checkout HEAD may be newer than `d4c29e8` because documentation-only
-commits can follow the rc5 runtime commit. Do not start the service unless the
-pull was a clean fast-forward, the reviewed rc5 commit is an ancestor, and the
+The checkout HEAD may be newer than `fa7d656` because documentation-only
+commits can follow the rc6 runtime commit. Do not start the service unless the
+pull was a clean fast-forward, the reviewed rc6 commit is an ancestor, and the
 runtime file comparison returns no differences.
 
 ### 4. Compile the deployed runtime
@@ -169,7 +170,7 @@ runtime file comparison returns no differences.
 No output is expected. On any compile error, leave the task stopped and follow
 the rollback section.
 
-### 5. Start and verify exactly one rc5 worker
+### 5. Start and verify exactly one rc6 worker
 
 ```powershell
 Start-ScheduledTask -TaskName "MSB Label Service"
@@ -185,17 +186,17 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
     Select-Object ProcessId,SessionId,CommandLine
 
 Get-Content C:\MSB_LabelService\logs\label_service.log -Tail 50 |
-    Select-String "4.1.0-rc5|Pending labels|No pending labels|ERROR|Traceback"
+    Select-String "4.1.0-rc6|Pending labels|No pending labels|ERROR|Traceback"
 ```
 
 Expected:
 
 - exactly one `label_poll_service_v4.py` process;
-- startup banner `MSB Label Service 4.1.0-rc5`;
+- startup banner `MSB Label Service 4.1.0-rc6`;
 - a successful poll with the expected pending counts;
 - no `ERROR` or traceback.
 
-### Rollback after a failed rc5 startup
+### Rollback after a failed rc6 startup
 
 Use only the commit captured in `$labelServiceRollbackCommit` by this
 procedure. Do not clear the spooler or alter PostgreSQL as part of source
@@ -207,7 +208,7 @@ git switch --detach $labelServiceRollbackCommit
 ```
 
 Re-run the compilation command for the files present at that commit, start the
-Scheduled Task, and verify the restored version/process/log. Preserve the rc5
+Scheduled Task, and verify the restored version/process/log. Preserve the rc6
 failure output for engineering review. Return the checkout to reviewed `main`
 only through a later controlled deployment.
 

@@ -80,6 +80,12 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-10-17 — v4.1.0-rc6
+#   • FIX: Route standard hyphenated Display names to the two-line template
+#       - Splits after the second segment regardless of total name length
+#       - Keeps nonstandard names without that structure on one line
+#       - Aligns preflight planning with the immutable batch snapshot
+#
 ## 2026-09-15 — v4.1.0-rc5
 #   • FIX: Keep an active Brother job recoverable through tape replacement
 #       - Pauses the spooler and physical-completion timeouts for known media
@@ -226,7 +232,7 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc5"
+SERVICE_VERSION = "4.1.0-rc6"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -1025,10 +1031,9 @@ def pending_display_families(conn) -> list[dict[str, Any]]:
     render modes required by each family.
 
     Accepted compatibility rule:
-      - <= 20 characters: one line
-      - > 20 with at least two hyphen-delimited leading segments:
+      - names with at least two hyphen-delimited leading segments:
         split after the second segment
-      - > 20 without that structure: remain one line
+      - names without that structure: remain one line
     """
     return query_rows(
         conn,
@@ -1038,12 +1043,10 @@ def pending_display_families(conn) -> list[dict[str, Any]]:
             lt.label_template_code,
             COUNT(*)::integer AS pending_count,
             COUNT(*) FILTER (
-                WHERE LENGTH(d.display_name) <= 20
-                   OR d.display_name !~ '^[^-]+-[^-]+-'
+                WHERE d.display_name !~ '^[^-]+-[^-]+-'
             )::integer AS one_line_count,
             COUNT(*) FILTER (
-                WHERE LENGTH(d.display_name) > 20
-                  AND d.display_name ~ '^[^-]+-[^-]+-'
+                WHERE d.display_name ~ '^[^-]+-[^-]+-'
             )::integer AS two_line_count
         FROM ref.display d
         JOIN ref.label_template lt
@@ -1070,12 +1073,10 @@ def pending_display_preflight_plan(
             lt.label_template_code,
             COUNT(*)::integer AS pending_count,
             COUNT(*) FILTER (
-                WHERE LENGTH(d.display_name) <= 20
-                   OR d.display_name !~ '^[^-]+-[^-]+-'
+                WHERE d.display_name !~ '^[^-]+-[^-]+-'
             )::integer AS one_line_count,
             COUNT(*) FILTER (
-                WHERE LENGTH(d.display_name) > 20
-                  AND d.display_name ~ '^[^-]+-[^-]+-'
+                WHERE d.display_name ~ '^[^-]+-[^-]+-'
             )::integer AS two_line_count,
             'DISPLAY:' || d.label_template_id::text || ':' ||
             COALESCE(

@@ -2,7 +2,7 @@
 
 | Document Control | Value |
 |---|---|
-| Status | CURRENT — rc4 production / rc5 recovery candidate |
+| Status | CURRENT — rc5 production / rc6 Display-layout candidate |
 | System | PRINT-SERVER / MSB Label Print Service v4 |
 | Last Updated | 2026-09-15 |
 | Related Engineering Contract | `docs/01_Engineering/Label_Service_v4_Architecture_and_Acceptance.md` |
@@ -184,6 +184,37 @@ Leave the Scheduled Task and V4 worker running during this normal recovery.
 Stopping or restarting V4 discards the in-memory observation context and turns
 the event into an exceptional reconciliation case. It must not be part of the
 routine cassette-replacement procedure.
+
+### Exception: the retained job itself is known to be wrong
+
+Do not allow automatic tape-out recovery to resume a retained job when the
+physical output proves that the submitted layout or content is wrong. This is
+not a normal tape replacement.
+
+1. Leave the cassette out and the cover open.
+2. Stop the `MSB Label Service` Scheduled Task and prove that no V4 Python
+   process remains.
+3. Preserve the service log and exact batch log.
+4. Press the PT-P950NW Power button once to cancel the retained printer job,
+   then leave the printer powered off.
+5. Do not install replacement tape and do not request the labels again.
+6. Correct and deploy the application defect before retiring or retrying the
+   frozen database batch.
+7. Prove the Windows queue is empty and inspect the exact batch header, items,
+   current request flags, and physical output before database reconciliation.
+
+The Power-button cancellation step follows Brother's PT-P950NW job-cancel
+instruction. It must be used only when the operator has positively determined
+that resuming the retained job would produce unusable output.
+
+The 2026-10-17 Display batch 385 incident established this exception. Rc5
+incorrectly classified 23 standard hyphenated Display names as `ONE_LINE`
+because they were 20 characters or shorter. Five wasteful one-line labels
+emerged before tape-out, and the sixth carried the green/racing-stripe end
+marker. The Scheduled Task was stopped and the printer powered off with no
+cassette installed so the retained 23-label job could not resume. All six
+physical outputs were rejected; all 23 requests required a fresh 24 mm
+two-line batch after the routing and profile defects were corrected.
 
 ### Boundary-label rule
 
