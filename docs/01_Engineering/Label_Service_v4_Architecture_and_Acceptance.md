@@ -231,6 +231,15 @@ notice, and left Display 637 pending. Candidate `4.1.0-rc7` renames the lower
 text object to `objLine2` and adds a regression test that opens the real `.lbx`
 archive and requires the distinct `objQr`, `objLine1`, and `objLine2` contract.
 
+The subsequent rc7 sample proved that object naming alone was insufficient
+physical acceptance. The operator corrected both text objects to 20 pt Arial
+Black, removed the leading sample spaces and mixed-format text runs, aligned
+both text boxes at `x=68.8pt`, and expanded the nominal background to
+`279.2pt` (about 3.88 inches). Candidate `4.1.0-rc8` carries that exact
+operator-produced template and statically verifies its font, alignment,
+leading-space, object-name, and six-inch maximum-width contracts. A new
+service-driven sample is still required before releasing the held Displays.
+
 The 2026-08-31 profile found 107 Display names over 20 characters. 103 follow the established two-hyphen split structure. Three confirmed valid long names intentionally remain one-line:
 
 ```text

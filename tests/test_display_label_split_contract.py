@@ -24,6 +24,22 @@ def expected_split(display_name: str) -> tuple[str, str]:
 
 
 class DisplayLabelSplitContractTests(unittest.TestCase):
+    @staticmethod
+    def _local_name(element: ElementTree.Element) -> str:
+        return element.tag.rsplit("}", 1)[-1]
+
+    @classmethod
+    def _first_descendant(
+        cls,
+        element: ElementTree.Element,
+        local_name: str,
+    ) -> ElementTree.Element:
+        return next(
+            descendant
+            for descendant in element.iter()
+            if cls._local_name(descendant) == local_name
+        )
+
     def test_24mm_two_line_template_has_distinct_required_objects(self) -> None:
         template_path = TEMPLATE_DIR / "QR_label_2_line_horz_24mm.lbx"
 
@@ -42,6 +58,48 @@ class DisplayLabelSplitContractTests(unittest.TestCase):
             ["objQr", "objLine1", "objLine2"],
         )
         self.assertEqual(len(object_names), len(set(object_names)))
+
+    def test_24mm_two_line_template_has_accepted_physical_format(self) -> None:
+        template_path = TEMPLATE_DIR / "QR_label_2_line_horz_24mm.lbx"
+
+        with zipfile.ZipFile(template_path) as template:
+            label_xml = template.read("label.xml")
+
+        root = ElementTree.fromstring(label_xml)
+        background = self._first_descendant(root, "backGround")
+        background_width_points = float(
+            background.attrib["width"].removesuffix("pt")
+        )
+
+        self.assertEqual(background.attrib["width"], "279.2pt")
+        self.assertLessEqual(background_width_points, 6 * 72)
+
+        text_objects = {}
+        for element in root.iter():
+            if self._local_name(element) != "text":
+                continue
+            expanded = self._first_descendant(element, "expanded")
+            object_name = expanded.attrib["objectName"]
+            text_objects[object_name] = element
+
+        self.assertEqual(set(text_objects), {"objLine1", "objLine2"})
+
+        for object_name, text_object in text_objects.items():
+            with self.subTest(object_name=object_name):
+                object_style = self._first_descendant(
+                    text_object,
+                    "objectStyle",
+                )
+                font = self._first_descendant(text_object, "logFont")
+                font_ext = self._first_descendant(text_object, "fontExt")
+                sample_data = self._first_descendant(text_object, "data")
+
+                self.assertEqual(object_style.attrib["x"], "68.8pt")
+                self.assertEqual(object_style.attrib["width"], "213.2pt")
+                self.assertEqual(font.attrib["name"], "Arial Black")
+                self.assertEqual(font.attrib["weight"], "900")
+                self.assertEqual(font_ext.attrib["size"], "20pt")
+                self.assertEqual(sample_data.text, sample_data.text.strip())
 
     def test_short_standard_names_are_two_line(self) -> None:
         self.assertEqual(
