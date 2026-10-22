@@ -8,7 +8,7 @@
 | Audience | MSB Database Administrator / Print Server Maintainer |
 | Status | CURRENT |
 | Owner | MSB Database Administrator |
-| Last Reviewed | 2026-09-15 |
+| Last Reviewed | 2026-10-22 |
 | Keywords | label print service, LOR runner, print server, PRINT-SERVER, Brother, PT-P950NW, b-PAC, SSH, OpenSSH, Task Scheduler, reboot, recovery |
 
 ## Purpose
@@ -26,8 +26,8 @@ configuration, logs, or recovery actions.
 
 ## Current Production Runtime
 
-Verified application state at the October 17 Display-layout incident and before
-the `4.1.0-rc6` deployment:
+Verified application state after the October 20 batch-390 recovery and before
+the `4.1.0-rc9` deployment:
 
 ```text
 Windows hostname: PRINT-SERVER
@@ -36,11 +36,11 @@ Windows account: PRINT-SERVER\Print Service
 Production working directory: C:\MSB_LabelService
 Production Python: C:\Program Files\Python\python.exe
 Current service script: C:\MSB_LabelService\label_poll_service_v4.py
-Current deployed version: 4.1.0-rc5
-Current deployed Git commit: 57275592a2ff70f1247f4fd40c7e40e823bd88b8
-Current task state: intentionally stopped during Display batch 385 recovery
-Reviewed rc6 runtime commit: fa7d656f858cfee2fd2d8eee80cec96b3cab4670
-Candidate version: 4.1.0-rc6
+Current deployed version: 4.1.0-rc8
+Current deployed Git commit: 5a7cf8375cf68aedf5328a2e2c6afee8cc424300
+Current task state: running after successful twelve-label recovery
+Reviewed rc9 runtime commit: ad90bd233336ffb0ae6d5610e21e3923d6324341
+Candidate version: 4.1.0-rc9
 Legacy manual launcher: C:\start_label_service.bat
 Brother printer queue: Brother PT-P950NW
 Brother printer port: 192.168.5.12_1
@@ -85,7 +85,9 @@ Get-Content C:\MSB_LabelService\logs\label_service.log -Tail 30
 
 Proceed only when:
 
-- Git is on `main` with no modified/untracked files;
+- Git is on `main` with no modified files; preserve and explicitly account for
+  the known untracked `templates/Handle with Extreme Caution.lbx` if it is
+  still present;
 - either exactly one V4 process is running, or the Scheduled Task is already
   intentionally stopped with no V3/V4 process after a controlled recovery;
 - both Windows print queues are empty;
@@ -124,35 +126,34 @@ $labelServiceRollbackCommit = git rev-parse HEAD
 git pull --ff-only origin main
 ```
 
-Inspect the update and prove that the reviewed rc6 runtime is present without
+Inspect the update and prove that the reviewed rc9 runtime is present without
 later changes to its executable modules:
 
 ```powershell
 git status --short --branch
 git rev-parse HEAD
 
-$reviewedRc6Commit = "fa7d656f858cfee2fd2d8eee80cec96b3cab4670"
-git merge-base --is-ancestor $reviewedRc6Commit HEAD
+$reviewedRc9Commit = "ad90bd233336ffb0ae6d5610e21e3923d6324341"
+git merge-base --is-ancestor $reviewedRc9Commit HEAD
 if ($LASTEXITCODE -ne 0) {
-    throw "Reviewed rc6 commit is not contained in the deployed checkout."
+    throw "Reviewed rc9 commit is not contained in the deployed checkout."
 }
 
-git diff --exit-code $reviewedRc6Commit HEAD -- `
+git diff --exit-code $reviewedRc9Commit HEAD -- `
     active_print_recovery_runtime.py `
     label_poll_service_v4.py `
     v4_preflight_runtime.py `
     brother_status_runtime.py `
     brother_status_sampler_runtime.py `
-    spooler_observer_runtime.py `
-    sqldisplay_snapshot_v4.sql
+    spooler_observer_runtime.py
 if ($LASTEXITCODE -ne 0) {
-    throw "Runtime files differ from the reviewed rc6 commit."
+    throw "Runtime files differ from the reviewed rc9 commit."
 }
 ```
 
-The checkout HEAD may be newer than `fa7d656` because documentation-only
-commits can follow the rc6 runtime commit. Do not start the service unless the
-pull was a clean fast-forward, the reviewed rc6 commit is an ancestor, and the
+The checkout HEAD may be newer than the reviewed commit because
+documentation-only commits can follow the rc9 runtime commit. Do not start the
+service unless the pull was a clean fast-forward, the reviewed rc9 commit is an ancestor, and the
 runtime file comparison returns no differences.
 
 ### 4. Compile the deployed runtime
@@ -170,7 +171,7 @@ runtime file comparison returns no differences.
 No output is expected. On any compile error, leave the task stopped and follow
 the rollback section.
 
-### 5. Start and verify exactly one rc6 worker
+### 5. Start and verify exactly one rc9 worker
 
 ```powershell
 Start-ScheduledTask -TaskName "MSB Label Service"
@@ -186,17 +187,17 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
     Select-Object ProcessId,SessionId,CommandLine
 
 Get-Content C:\MSB_LabelService\logs\label_service.log -Tail 50 |
-    Select-String "4.1.0-rc6|Pending labels|No pending labels|ERROR|Traceback"
+    Select-String "4.1.0-rc9|Pending labels|No pending labels|ERROR|Traceback"
 ```
 
 Expected:
 
 - exactly one `label_poll_service_v4.py` process;
-- startup banner `MSB Label Service 4.1.0-rc6`;
+- startup banner `MSB Label Service 4.1.0-rc9`;
 - a successful poll with the expected pending counts;
 - no `ERROR` or traceback.
 
-### Rollback after a failed rc6 startup
+### Rollback after a failed rc9 startup
 
 Use only the commit captured in `$labelServiceRollbackCommit` by this
 procedure. Do not clear the spooler or alter PostgreSQL as part of source
@@ -208,7 +209,7 @@ git switch --detach $labelServiceRollbackCommit
 ```
 
 Re-run the compilation command for the files present at that commit, start the
-Scheduled Task, and verify the restored version/process/log. Preserve the rc6
+Scheduled Task, and verify the restored version/process/log. Preserve the rc9
 failure output for engineering review. Return the checkout to reviewed `main`
 only through a later controlled deployment.
 
