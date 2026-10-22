@@ -19,6 +19,10 @@ LogMessage = Callable[[str], None]
 RecoverableReason = Callable[[BrotherStatus], str | None]
 
 
+class PreSubmissionObservationError(RuntimeError):
+    """Observation failed before b-PAC was allowed to submit any label."""
+
+
 @dataclass(frozen=True)
 class PhysicalCompletionObservation:
     """Brother state that ended post-spooler physical observation."""
@@ -39,6 +43,8 @@ class BrotherStatusSampler:
         poll_interval_seconds: float = 0.25,
         heartbeat_seconds: float = 5.0,
         startup_timeout_seconds: float = 5.0,
+        startup_attempts: int = 3,
+        terminal_error_confirm_seconds: float = 1.0,
         stop_timeout_seconds: float = 5.0,
     ) -> None:
         if poll_interval_seconds <= 0:
@@ -47,6 +53,12 @@ class BrotherStatusSampler:
             raise ValueError("heartbeat_seconds must be greater than zero")
         if startup_timeout_seconds <= 0:
             raise ValueError("startup_timeout_seconds must be greater than zero")
+        if startup_attempts <= 0:
+            raise ValueError("startup_attempts must be greater than zero")
+        if terminal_error_confirm_seconds < 0:
+            raise ValueError(
+                "terminal_error_confirm_seconds cannot be negative"
+            )
         if stop_timeout_seconds <= 0:
             raise ValueError("stop_timeout_seconds must be greater than zero")
 
@@ -56,6 +68,8 @@ class BrotherStatusSampler:
         self.poll_interval_seconds = poll_interval_seconds
         self.heartbeat_seconds = heartbeat_seconds
         self.startup_timeout_seconds = startup_timeout_seconds
+        self.startup_attempts = startup_attempts
+        self.terminal_error_confirm_seconds = terminal_error_confirm_seconds
         self.stop_timeout_seconds = stop_timeout_seconds
 
         self._lock = threading.Lock()
@@ -63,6 +77,8 @@ class BrotherStatusSampler:
         self._startup_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._startup_error: Exception | None = None
+        self._startup_attempt_count = 0
+        self._startup_complete = False
         self._last_raw_hex: str | None = None
         self._last_logged_at: float | None = None
         self._last_error_text: str | None = None
@@ -91,7 +107,7 @@ class BrotherStatusSampler:
 
         if not self._startup_event.wait(self.startup_timeout_seconds):
             self.stop()
-            raise RuntimeError(
+            raise PreSubmissionObservationError(
                 "Brother status sampler did not complete its initial sample"
             )
 
@@ -100,25 +116,19 @@ class BrotherStatusSampler:
 
         if startup_error is not None:
             self.stop()
-            raise RuntimeError(
+            raise PreSubmissionObservationError(
                 "Brother status sampler failed before print submission: "
                 f"{startup_error}"
             ) from startup_error
 
     def _observe(self) -> None:
-        first_attempt = True
-
         while not self._stop_event.is_set():
             try:
                 status = self.read_status()
             except Exception as exc:
-                self._record_error(exc, first_attempt=first_attempt)
+                self._record_error(exc)
             else:
                 self._record_status(status)
-            finally:
-                if first_attempt:
-                    self._startup_event.set()
-                    first_attempt = False
 
             self._stop_event.wait(self.poll_interval_seconds)
 
@@ -127,6 +137,11 @@ class BrotherStatusSampler:
         message: str | None = None
 
         with self._lock:
+            if not self._startup_complete:
+                self._startup_complete = True
+                self._startup_error = None
+                self._startup_event.set()
+
             self._sample_count += 1
             sample_number = self._sample_count
 
@@ -187,6 +202,9 @@ class BrotherStatusSampler:
         previous_check_at = time.monotonic()
         idle_since: float | None = None
         previous_pause_reason: str | None = None
+        terminal_error_signature: tuple[str, ...] | None = None
+        terminal_error_since: float | None = None
+        terminal_error_start_sample: int | None = None
 
         with self._lock:
             starting_sample_count = self._sample_count
@@ -206,11 +224,61 @@ class BrotherStatusSampler:
                 sample_count = self._sample_count
 
             if status is not None:
+                if status.errors:
+                    error_signature = tuple(status.errors)
+                    if error_signature != terminal_error_signature:
+                        terminal_error_signature = error_signature
+                        terminal_error_since = now
+                        terminal_error_start_sample = sample_count
+                        self.log_message(
+                            "BROTHER_STATUS_PHYSICAL_ERROR_CONFIRMING "
+                            f"context='{self.context}' sample={sample_count} "
+                            f"confirm_seconds="
+                            f"{self.terminal_error_confirm_seconds:g} "
+                            f"errors='{','.join(status.errors)}' "
+                            f"raw={status.raw_hex}"
+                        )
+                    error_confirmed = (
+                        self.terminal_error_confirm_seconds == 0
+                        or (
+                            terminal_error_since is not None
+                            and terminal_error_start_sample is not None
+                            and sample_count > terminal_error_start_sample
+                            and now - terminal_error_since
+                            >= self.terminal_error_confirm_seconds
+                        )
+                    )
+                else:
+                    if terminal_error_signature is not None:
+                        self.log_message(
+                            "BROTHER_STATUS_PHYSICAL_ERROR_CLEARED "
+                            f"context='{self.context}' sample={sample_count} "
+                            f"errors='{','.join(terminal_error_signature)}' "
+                            f"raw={status.raw_hex}"
+                        )
+                    terminal_error_signature = None
+                    terminal_error_since = None
+                    terminal_error_start_sample = None
+                    error_confirmed = False
+
                 pause_reason = (
                     recoverable_reason(status)
                     if recoverable_reason is not None
+                    and (not status.errors or error_confirmed)
                     else None
                 )
+
+                if status.errors and not error_confirmed:
+                    idle_since = None
+                    remaining_timeout_seconds -= elapsed
+                    if remaining_timeout_seconds <= 0:
+                        raise RuntimeError(
+                            "Brother printer error did not remain confirmed "
+                            "by consecutive fresh samples within the physical "
+                            f"completion timeout; last_raw={status.raw_hex}"
+                        )
+                    self._stop_event.wait(self.poll_interval_seconds)
+                    continue
 
                 if pause_reason is not None:
                     if pause_reason != previous_pause_reason:
@@ -237,6 +305,7 @@ class BrotherStatusSampler:
 
                 if (
                     pause_reason is None
+                    and error_confirmed
                     and "End of media" in status.errors
                 ):
                     self.log_message(
@@ -249,7 +318,7 @@ class BrotherStatusSampler:
                         status=status,
                     )
 
-                if pause_reason is None and status.errors:
+                if pause_reason is None and error_confirmed and status.errors:
                     errors = ",".join(status.errors)
                     self.log_message(
                         "BROTHER_STATUS_PHYSICAL_TERMINAL outcome=ERROR "
@@ -321,15 +390,26 @@ class BrotherStatusSampler:
         with self._lock:
             return self._last_status
 
-    def _record_error(self, exc: Exception, *, first_attempt: bool) -> None:
+    def _record_error(self, exc: Exception) -> None:
         now = time.monotonic()
         error_text = f"{type(exc).__name__}: {exc}"
-        message: str | None = None
+        messages: list[str] = []
 
         with self._lock:
             self._error_count += 1
-            if first_attempt:
-                self._startup_error = exc
+            if not self._startup_complete:
+                self._startup_attempt_count += 1
+                if self._startup_attempt_count >= self.startup_attempts:
+                    self._startup_error = exc
+                    self._startup_complete = True
+                    self._startup_event.set()
+                else:
+                    messages.append(
+                        "BROTHER_STATUS_SAMPLER_STARTUP_RETRY "
+                        f"context='{self.context}' "
+                        f"attempt={self._startup_attempt_count}/"
+                        f"{self.startup_attempts} error='{error_text}'"
+                    )
 
             should_log = (
                 error_text != self._last_error_text
@@ -340,13 +420,13 @@ class BrotherStatusSampler:
 
             if should_log:
                 self._last_logged_at = now
-                message = (
+                messages.append(
                     "BROTHER_STATUS_SAMPLE_ERROR "
                     f"context='{self.context}' "
                     f"error_count={self._error_count} error='{error_text}'"
                 )
 
-        if message is not None:
+        for message in messages:
             self.log_message(message)
 
     def stop(self) -> None:
