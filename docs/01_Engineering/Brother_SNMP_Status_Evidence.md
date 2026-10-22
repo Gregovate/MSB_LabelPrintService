@@ -358,6 +358,45 @@ Two operator-labeled P950 tests (cover open and empty 36 mm cassette) accidental
     proof of batch failure. Completion timeouts must pause while Brother retains
     the submitted job, and an empty Windows queue must not trigger a duplicate
     application submission.
+12. A single sampled `error2=0x04` communication-error packet is not sufficient
+    terminal evidence. The error must persist across consecutive fresh samples
+    for a bounded confirmation interval.
+13. After a confirmed post-submission communication error clears, ready/idle
+    alone is not proof that the retained physical job completed. V4 must observe
+    renewed active phase before accepting later stable ready/idle.
+
+## October 20 communication-error incident
+
+Display batch 390 submitted six 36 mm two-line labels. Windows job 14 was
+observed and cleared, while status sampling remained healthy and active through
+sample 80. At sample 84 the packet changed to:
+
+```text
+80 20 42 30 70 30 04 00 00 04 24 01 00 00 00 00 00 00 02 00 00 00 00 00 01 08 00 00 00 00 00 00
+```
+
+Decoded evidence:
+
+| Field | Value |
+|---|---|
+| Media | 36 mm laminated tape |
+| Error Information 1 | `0x00` |
+| Error Information 2 | `0x04` — Communication error |
+| Status type | `0x02` |
+| Phase | `0x00` |
+
+Rc8 accepted that one sample as terminal, marked the batch FAILED, and blocked
+all later requests. Physical observation confirmed that none of the six batch
+390 labels printed. A later standalone query returned the normal ready 36 mm
+packet, proving the status condition had cleared. Reboot did not resolve the
+database blocker. After controlled batch reconciliation, all twelve pending
+Display requests printed successfully.
+
+Candidate rc9 therefore confirms errors over time and fresh samples. A
+confirmed communication error becomes a visible same-batch recovery hold. The
+service does not finalize until it observes retained-job activity followed by
+stable ready/idle, and it does not automatically resubmit an ambiguous
+post-spooler workload.
 
 During later V4 acceptance, a pending 36 mm Container with 24 mm laminated tape returned the same proven 24 mm ready status value. Preflight correctly blocked printing. The operator initially reported no visible dialog and later found it buried behind six windows, confirming that worker-owned desktop dialogs were not an acceptable notification path.
 

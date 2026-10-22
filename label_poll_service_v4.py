@@ -19,7 +19,10 @@ import socket
 import os
 
 from brother_status_runtime import query_brother_snmp_status
-from brother_status_sampler_runtime import BrotherStatusSampler
+from brother_status_sampler_runtime import (
+    BrotherStatusSampler,
+    PreSubmissionObservationError,
+)
 from active_print_recovery_runtime import ActivePrintMediaRecovery
 from v4_preflight_runtime import (
     AutomaticPreflightRecovery,
@@ -80,6 +83,16 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-10-22 — v4.1.0-rc9
+#   • FIX: Recover from transient Brother observation failures
+#       - Retries initial SNMP sampling before b-PAC submission
+#       - Retires proven no-submission snapshots as RETRYABLE instead of FAILED
+#       - Leaves source requests pending for the next automatic service poll
+#   • FIX: Confirm post-spooler errors before changing batch state
+#       - Ignores one-sample Brother error transitions
+#       - Holds confirmed communication errors in same-batch recovery
+#       - Requires observed retained-job activity before successful finalization
+#
 ## 2026-10-17 — v4.1.0-rc6
 #   • FIX: Route standard hyphenated Display names to the two-line template
 #       - Splits after the second segment regardless of total name length
@@ -232,7 +245,7 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc8"
+SERVICE_VERSION = "4.1.0-rc9"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -325,6 +338,16 @@ STATUS_HEARTBEAT_SECONDS = CONFIG.getfloat(
     "status_heartbeat_seconds",
     fallback=5.0,
 )
+STATUS_SAMPLER_STARTUP_ATTEMPTS = CONFIG.getint(
+    "printing",
+    "status_sampler_startup_attempts",
+    fallback=3,
+)
+STATUS_TERMINAL_ERROR_CONFIRM_SECONDS = CONFIG.getfloat(
+    "printing",
+    "status_terminal_error_confirm_seconds",
+    fallback=1.0,
+)
 STATUS_PHYSICAL_COMPLETION_TIMEOUT_SECONDS = CONFIG.getfloat(
     "printing",
     "status_physical_completion_timeout_seconds",
@@ -345,6 +368,12 @@ if STATUS_SAMPLE_INTERVAL_SECONDS <= 0:
     raise RuntimeError("status_sample_interval_seconds must be greater than zero")
 if STATUS_HEARTBEAT_SECONDS <= 0:
     raise RuntimeError("status_heartbeat_seconds must be greater than zero")
+if STATUS_SAMPLER_STARTUP_ATTEMPTS <= 0:
+    raise RuntimeError("status_sampler_startup_attempts must be greater than zero")
+if STATUS_TERMINAL_ERROR_CONFIRM_SECONDS < 0:
+    raise RuntimeError(
+        "status_terminal_error_confirm_seconds cannot be negative"
+    )
 if STATUS_PHYSICAL_COMPLETION_TIMEOUT_SECONDS <= 0:
     raise RuntimeError(
         "status_physical_completion_timeout_seconds must be greater than zero"
@@ -1907,7 +1936,16 @@ def create_brother_status_sampler(
         log_message=lambda message: write_batch_log(batch_log_path, message),
         poll_interval_seconds=STATUS_SAMPLE_INTERVAL_SECONDS,
         heartbeat_seconds=STATUS_HEARTBEAT_SECONDS,
-        startup_timeout_seconds=SNMP_TIMEOUT_SECONDS + 2.0,
+        startup_timeout_seconds=(
+            SNMP_TIMEOUT_SECONDS * STATUS_SAMPLER_STARTUP_ATTEMPTS
+            + STATUS_SAMPLE_INTERVAL_SECONDS
+            * max(0, STATUS_SAMPLER_STARTUP_ATTEMPTS - 1)
+            + 2.0
+        ),
+        startup_attempts=STATUS_SAMPLER_STARTUP_ATTEMPTS,
+        terminal_error_confirm_seconds=(
+            STATUS_TERMINAL_ERROR_CONFIRM_SECONDS
+        ),
         stop_timeout_seconds=SNMP_TIMEOUT_SECONDS + 2.0,
     )
 
@@ -1939,10 +1977,13 @@ def start_print_observers(
 
     try:
         spooler_observer.start()
-    except Exception:
+    except Exception as exc:
         if status_sampler is not None:
             status_sampler.stop()
-        raise
+        raise PreSubmissionObservationError(
+            "Spooler observation failed before print submission: "
+            f"{exc}"
+        ) from exc
 
     return spooler_observer, status_sampler
 
@@ -1995,7 +2036,10 @@ def wait_for_brother_physical_completion(
         timeout_seconds=STATUS_PHYSICAL_COMPLETION_TIMEOUT_SECONDS,
         idle_stable_seconds=STATUS_PHYSICAL_IDLE_STABLE_SECONDS,
         recoverable_reason=(
-            media_recovery.observe_status
+            lambda status: media_recovery.observe_status(
+                status,
+                include_transport_errors=True,
+            )
             if media_recovery is not None
             else None
         ),
@@ -2583,6 +2627,67 @@ def print_controller_batch(
 # ============================================================
 # FAILURE HANDLING HELPERS
 # ============================================================
+
+def release_pre_submission_batch(
+    conn,
+    *,
+    batch_type: str,
+    batch_id: int,
+    reason: str,
+) -> None:
+    """Retire a frozen batch proven to have made no print submission."""
+    batch_contracts = {
+        "display": (
+            "ops.display_label_batch",
+            "display_label_batch_id",
+            "ops.display_label_batch_item",
+        ),
+        "container": (
+            "ops.container_label_batch",
+            "container_label_batch_id",
+            "ops.container_label_batch_item",
+        ),
+        "controller": (
+            "ops.controller_label_batch",
+            "controller_label_batch_id",
+            "ops.controller_label_batch_item",
+        ),
+    }
+    try:
+        batch_table, id_column, item_table = batch_contracts[batch_type]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported batch type: {batch_type}") from exc
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {batch_table} AS b
+            SET status = 'RETRYABLE',
+                batch_completed_at = clock_timestamp(),
+                notes = COALESCE(b.notes, '')
+                    || E'\\nRETRYABLE BEFORE SUBMISSION: '
+                    || %(reason)s
+            WHERE b.{id_column} = %(batch_id)s
+              AND b.status = 'PRINTING'
+              AND b.batch_completed_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM {item_table} AS i
+                  WHERE i.{id_column} = b.{id_column}
+                    AND (
+                        i.printed_flag = true
+                        OR i.printed_at IS NOT NULL
+                    )
+              );
+            """,
+            {"batch_id": batch_id, "reason": reason[:1000]},
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError(
+                f"Could not safely release pre-submission {batch_type} "
+                f"batch {batch_id}; expected one clean PRINTING batch."
+            )
+
 
 def mark_display_batch_failed(conn, batch_id: int, reason: str) -> None:
     exec_sql(
@@ -3437,6 +3542,7 @@ def main() -> None:
                         process_controller(conn, controller_batch_id)
 
                     conn.commit()
+                    preflight_recovery.clear()
                     logging.info(
                         "Batch cycle committed successfully. display_batch_id=%s "
                         "container_batch_id=%s controller_batch_id=%s",
@@ -3448,32 +3554,100 @@ def main() -> None:
                 except Exception as batch_exc:
                     conn.rollback()
 
-                    # Re-open a transaction so we can mark failure cleanly
+                    # Re-open a transaction so we can record the exact outcome.
                     conn.autocommit = False
 
-                    if display_batch_id:
-                        mark_display_batch_failed(conn, display_batch_id, str(batch_exc))
+                    if isinstance(
+                        batch_exc,
+                        PreSubmissionObservationError,
+                    ):
+                        if display_batch_id:
+                            release_pre_submission_batch(
+                                conn,
+                                batch_type="display",
+                                batch_id=display_batch_id,
+                                reason=str(batch_exc),
+                            )
+                        if container_batch_id:
+                            release_pre_submission_batch(
+                                conn,
+                                batch_type="container",
+                                batch_id=container_batch_id,
+                                reason=str(batch_exc),
+                            )
+                        if controller_batch_id:
+                            release_pre_submission_batch(
+                                conn,
+                                batch_type="controller",
+                                batch_id=controller_batch_id,
+                                reason=str(batch_exc),
+                            )
 
-                    if container_batch_id:
-                        mark_container_batch_failed(conn, container_batch_id, str(batch_exc))
-
-                    if controller_batch_id:
-                        mark_controller_batch_failed(
-                            conn,
+                        logging.warning(
+                            "PRE_SUBMISSION_BATCH_RELEASED "
+                            "display_batch_id=%s container_batch_id=%s "
+                            "controller_batch_id=%s reason=%s "
+                            "automatic_retry=true",
+                            display_batch_id,
+                            container_batch_id,
                             controller_batch_id,
-                            str(batch_exc),
+                            batch_exc,
                         )
+                        preflight_recovery.check_once(
+                            workload_name="Label print observer startup",
+                            check_once=lambda: (
+                                False,
+                                f"{batch_exc}. No label was submitted. The "
+                                "requests remain pending and the Label Service "
+                                "will retry automatically.",
+                            ),
+                        )
+                    else:
+                        if display_batch_id:
+                            mark_display_batch_failed(
+                                conn,
+                                display_batch_id,
+                                str(batch_exc),
+                            )
+
+                        if container_batch_id:
+                            mark_container_batch_failed(
+                                conn,
+                                container_batch_id,
+                                str(batch_exc),
+                            )
+
+                        if controller_batch_id:
+                            mark_controller_batch_failed(
+                                conn,
+                                controller_batch_id,
+                                str(batch_exc),
+                            )
 
                     conn.commit()
 
-                    logging.exception(
-                        "Batch cycle failed. display_batch_id=%s "
-                        "container_batch_id=%s controller_batch_id=%s error=%s",
-                        display_batch_id,
-                        container_batch_id,
-                        controller_batch_id,
+                    if isinstance(
                         batch_exc,
-                    )
+                        PreSubmissionObservationError,
+                    ):
+                        logging.warning(
+                            "Batch cycle returned safely to pending work. "
+                            "display_batch_id=%s container_batch_id=%s "
+                            "controller_batch_id=%s",
+                            display_batch_id,
+                            container_batch_id,
+                            controller_batch_id,
+                        )
+                    else:
+                        logging.exception(
+                            "Batch cycle failed. display_batch_id=%s "
+                            "container_batch_id=%s "
+                            "controller_batch_id=%s error=%s",
+                            display_batch_id,
+                            container_batch_id,
+                            controller_batch_id,
+                            batch_exc,
+                        )
 
         except Exception as exc:
             logging.exception("Polling cycle failed: %s", exc)

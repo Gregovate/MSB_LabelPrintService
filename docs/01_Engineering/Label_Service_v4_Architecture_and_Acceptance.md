@@ -635,6 +635,52 @@ When the next natural tape-out occurs, operators should report which label was p
 One replacement-cassette replay of the boundary label is acceptable. The
 service must not submit that completed source request again.
 
+### Transient observation and communication recovery
+
+The October 17 batch 387 incident proved that one SNMP timeout could occur
+between a successful full preflight and the sampler's first active-job read.
+No b-PAC or Windows job existed, but rc8 marked the committed snapshot FAILED
+and permanently blocked the still-pending requests.
+
+The October 20 batch 390 incident proved a second boundary. Six 36 mm Display
+rows were submitted, Windows job 14 was observed and cleared, and Brother then
+reported one sampled packet with `error2=0x04`, `status=0x02`, and
+`phase=0x00`:
+
+```text
+80 20 42 30 70 30 04 00 00 04 24 01 00 00 00 00 00 00 02 00 00 00 00 00 01 08 00 00 00 00 00 00
+```
+
+Rc8 immediately marked batch 390 FAILED. None of its six physical labels had
+printed, all source requests remained true, later work was blocked, reboot did
+not recover the database blocker, and no warning reached the physical console.
+After controlled reconciliation, all twelve pending Display labels printed
+successfully.
+
+Candidate `4.1.0-rc9` establishes these contracts:
+
+- retry the sampler's initial SNMP read before b-PAC submission;
+- if all initial attempts fail, mark the clean frozen snapshot `RETRYABLE`,
+  preserve its items/history, and leave source requests pending for the next
+  normal poll;
+- never use that automatic release after b-PAC or spooler submission may have
+  occurred;
+- require a Brother error to remain present for the configured confirmation
+  interval and in consecutive fresh samples before it can control the batch;
+- treat a confirmed post-spooler communication error as a recoverable hold,
+  not an immediate FAILED batch;
+- send a visible console notice and pause the physical-completion timeout;
+- after the error clears, require observed `phase != 0x00` retained-job
+  activity before accepting later stable ready/idle as completion;
+- never blindly resubmit an ambiguous post-submission batch.
+
+The last rule preserves the print-storm boundary. If the service process is
+terminated during an ambiguous retained-job hold, automated replay is unsafe
+because software cannot prove whether zero, some, or all physical labels were
+produced. That exceptional case still requires the governed reconciliation
+procedure; normal transient recovery is automatic only while the same worker
+retains its observation context.
+
 ## Main v4 Execution Order
 
 The intended Display path is:
