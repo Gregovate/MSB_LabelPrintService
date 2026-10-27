@@ -284,6 +284,23 @@ Rc9 retries the initial status read. If every attempt fails, the service marks
 that clean snapshot `RETRYABLE`, leaves the source requests pending, and tries
 again on a later poll without creating a blocking FAILED batch.
 
+## Unrelated Work During a Failed Batch (rc10)
+
+An unresolved failed batch is still a hard stop for that workload type, because
+its physical completion may be ambiguous. It is no longer a global stop for
+the other label types:
+
+- failed Display batch: hold Displays; Containers and Controllers may proceed;
+- failed Container batch: hold Containers; Displays and Controllers may proceed;
+- failed Controller batch: hold Controllers; Displays and Containers may proceed.
+
+The active-`PRINTING`-batch and non-empty-printer-queue guards remain global.
+Operators must not delete or alter the failed batch to release unrelated work.
+The service logs the blocked and eligible workload sets on every bounded poll.
+Automatic email incident delivery is a separate Server Management integration;
+until that integration is deployed, the durable batch and service logs remain
+the authoritative failure record.
+
 ## What Staff Should Report After Tape-Out
 
 When tape runs out during a real batch, report at minimum:
@@ -345,6 +362,7 @@ worker remains in Session 0.
 
 | Date | Change |
 |---|---|
+| 2026-10-27 | Added rc10 workload-specific failed-batch isolation after stale Display batch 391 blocked five unrelated Controller requests. |
 | 2026-10-22 | Added rc9 initial-sampler retry, confirmed-error filtering, same-batch communication recovery, and the no-blind-resubmission boundary from Display batches 387 and 390. |
 | 2026-09-15 | Recorded Container batch 348 natural 36 mm tape-out, rc4 spooler-timeout failure, Brother retained-job replay after cassette replacement, and rc5 same-batch automatic-recovery procedure. |
 | 2026-09-08 | Added rc4 automatic preflight recovery, active-console notice, and physical-terminal sampling procedure. |
