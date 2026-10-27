@@ -904,6 +904,30 @@ cassette, cover open, unavailable printer, unsafe queue, missing runtime
 file/path, automatic recovery, visible notice delivery, no notice storm, and
 zero PostgreSQL execution-state change on every failed preflight.
 
+## Workload-Specific Failed-Batch Isolation (4.1.0-rc10)
+
+Production Display batch 391 physically printed twelve usable labels, then a
+single post-spooler Brother `error2=0x04` observation incorrectly left the
+batch `FAILED`. Because the pre-rc10 main loop treated any unresolved failed
+batch as a global stop, five later Controller requests remained pending and no
+Controller batch was created until the Display batch was reconciled manually.
+
+Rc10 separates the two safety responsibilities:
+
+- any active `PRINTING` batch remains a global printer lock;
+- an unresolved `FAILED` batch freezes only its own workload type;
+- unrelated pending workload types remain eligible after the shared active-job
+  and printer-queue safeguards pass;
+- when every pending workload is frozen by its own failure, the service creates
+  no batch and continues polling;
+- failed-batch isolation never reconciles ambiguous physical output and never
+  resubmits the failed workload.
+
+The pure routing contract is covered for Display, Container, and Controller,
+including the exact batch-391 shape: failed Display work plus five eligible
+Controller requests. The full repository suite passes 50/50 for the rc10
+candidate. Runtime commit: `3f9eabbbff4fffba8d5d78871b0bb7d6d533e783`.
+
 ## Remaining Required Work and Separate Workstreams
 
 Remaining separately tracked work after the V4 baseline merge:
