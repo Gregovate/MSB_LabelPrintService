@@ -24,6 +24,7 @@ from brother_status_sampler_runtime import (
     PreSubmissionObservationError,
 )
 from active_print_recovery_runtime import ActivePrintMediaRecovery
+from failed_batch_routing_runtime import isolate_failed_batch_workloads
 from v4_preflight_runtime import (
     AutomaticPreflightRecovery,
     send_preflight_operator_notice,
@@ -245,7 +246,7 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc9"
+SERVICE_VERSION = "4.1.0-rc10"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -2982,29 +2983,6 @@ def main() -> None:
                     CONTROLLER_POLLING_ENABLED,
                 )
 
-                if len(display_families) > 1:
-                    family_msg = (
-                        "Multiple pending Display label families detected. "
-                        "No Display batch will be created until v4 family routing "
-                        "selects one compatible workload: "
-                        + ", ".join(
-                            f'{row["label_template_code"]}={row["pending_count"]}'
-                            for row in display_families
-                        )
-                    )
-                    logging.error(family_msg)
-                    print(family_msg)
-                    conn.rollback()
-                    clear_lock()
-                    time.sleep(POLL_SECONDS)
-                    continue
-
-                selected_display_family = (
-                    display_families[0]
-                    if display_families
-                    else None
-                )
-
                 if (
                     display_pending == 0
                     and container_pending == 0
@@ -3043,35 +3021,81 @@ def main() -> None:
                     continue
 
                 # --------------------------------------------------
-                # Step 1b: Block retry if FAILED batch exists
+                # Step 1b: Freeze only the workload type that owns a FAILED
+                # batch. The global active-batch guard above still protects the
+                # shared physical printer. This preserves no-repeat safety
+                # without allowing one stale Display failure to suppress an
+                # unrelated Controller or Container workload indefinitely.
                 # --------------------------------------------------
                 failed_display_batch_id = get_failed_display_batch_id(conn)
                 failed_container_batch_id = get_failed_container_batch_id(conn)
                 failed_controller_batch_id = get_failed_controller_batch_id(conn)
 
-                if (
-                    failed_display_batch_id
-                    or failed_container_batch_id
-                    or failed_controller_batch_id
-                ):
+                routing = isolate_failed_batch_workloads(
+                    display_pending=display_pending,
+                    container_pending=container_pending,
+                    controller_pending=controller_pending,
+                    failed_display_batch_id=failed_display_batch_id,
+                    failed_container_batch_id=failed_container_batch_id,
+                    failed_controller_batch_id=failed_controller_batch_id,
+                )
+
+                if routing.blocked_workloads:
                     logging.error(
-                        "FAILED batch exists - blocking retry. "
-                        "display_batch_id=%s container_batch_id=%s "
-                        "controller_batch_id=%s",
+                        "FAILED batch exists - isolating affected workload(s). "
+                        "blocked=%s eligible=%s display_batch_id=%s "
+                        "container_batch_id=%s controller_batch_id=%s",
+                        list(routing.blocked_workloads),
+                        list(routing.eligible_workloads),
                         failed_display_batch_id,
                         failed_container_batch_id,
                         failed_controller_batch_id,
                     )
                     print(
-                        f"FAILED batch exists - manual intervention required. "
+                        "FAILED batch exists - affected workload remains "
+                        "frozen; unrelated eligible work may continue. "
+                        f"blocked={list(routing.blocked_workloads)} "
+                        f"eligible={list(routing.eligible_workloads)} "
                         f"display_batch_id={failed_display_batch_id} "
                         f"container_batch_id={failed_container_batch_id} "
                         f"controller_batch_id={failed_controller_batch_id}"
                     )
+
+                display_pending = routing.display_pending
+                container_pending = routing.container_pending
+                controller_pending = routing.controller_pending
+
+                if failed_display_batch_id is not None:
+                    display_families = []
+
+                if routing.all_pending_work_blocked:
                     conn.rollback()
                     clear_lock()
                     time.sleep(POLL_SECONDS)
                     continue
+
+                if len(display_families) > 1:
+                    family_msg = (
+                        "Multiple pending Display label families detected. "
+                        "No Display batch will be created until v4 family routing "
+                        "selects one compatible workload: "
+                        + ", ".join(
+                            f'{row["label_template_code"]}={row["pending_count"]}'
+                            for row in display_families
+                        )
+                    )
+                    logging.error(family_msg)
+                    print(family_msg)
+                    conn.rollback()
+                    clear_lock()
+                    time.sleep(POLL_SECONDS)
+                    continue
+
+                selected_display_family = (
+                    display_families[0]
+                    if display_families
+                    else None
+                )
 
                 # --------------------------------------------------
                 # Step 2: Resolve exact physical workload BEFORE batch creation
@@ -3663,3 +3687,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         sys.exit(0)
+
