@@ -34,7 +34,7 @@ class ControllerV4ContractTests(unittest.TestCase):
             ):
                 service_versions.append(ast.literal_eval(node.value))
 
-        self.assertEqual(service_versions, ["4.1.0-rc9"])
+        self.assertEqual(service_versions, ["4.1.0-rc10"])
 
     def test_service_source_parses_and_defines_controller_pipeline(self) -> None:
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
@@ -196,6 +196,19 @@ class ControllerV4ContractTests(unittest.TestCase):
         self.assertIn("PRE_SUBMISSION_BATCH_RELEASED", source)
         self.assertIn("automatic_retry=true", source)
 
+    def test_failed_batch_guard_is_workload_specific(self) -> None:
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("isolate_failed_batch_workloads(", source)
+        self.assertIn(
+            "FAILED batch exists - isolating affected workload(s)",
+            source,
+        )
+        self.assertNotIn(
+            "FAILED batch exists - blocking retry.",
+            source,
+        )
+
     def test_all_renderers_pause_spooler_timeout_for_media_recovery(self) -> None:
         source = SERVICE_SOURCE.read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -254,3 +267,4 @@ class ControllerV4ContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
