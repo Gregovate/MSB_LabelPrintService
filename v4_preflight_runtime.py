@@ -41,6 +41,8 @@ class AutomaticPreflightRecovery:
         notice_heartbeat_seconds: float = 60.0,
         monotonic: Callable[[], float] = time.monotonic,
         notify_operator: Callable[[str, str], bool] | None = None,
+        on_wait: Callable[[str, str, int, float], None] | None = None,
+        on_recovered: Callable[[str, int, float, str], None] | None = None,
     ) -> None:
         if notice_heartbeat_seconds <= 0:
             raise ValueError("notice_heartbeat_seconds must be greater than zero")
@@ -48,6 +50,8 @@ class AutomaticPreflightRecovery:
         self.notice_heartbeat_seconds = notice_heartbeat_seconds
         self.monotonic = monotonic
         self.notify_operator = notify_operator or send_preflight_operator_notice
+        self.on_wait = on_wait
+        self.on_recovered = on_recovered
         self._waiting: dict[str, _PreflightWaitState] = {}
 
     def clear(self) -> None:
@@ -77,6 +81,13 @@ class AutomaticPreflightRecovery:
                     now - waiting.started_at,
                     reason,
                 )
+                if self.on_recovered is not None:
+                    self.on_recovered(
+                        workload_name,
+                        attempt,
+                        now - waiting.started_at,
+                        reason,
+                    )
                 del self._waiting[workload_name]
 
             logging.info(
@@ -128,6 +139,14 @@ class AutomaticPreflightRecovery:
             now - waiting.started_at,
             reason,
         )
+
+        if self.on_wait is not None:
+            self.on_wait(
+                workload_name,
+                reason,
+                waiting.attempts,
+                now - waiting.started_at,
+            )
 
         if event in {"ENTER", "CHANGED"}:
             logging.error(
