@@ -34,7 +34,29 @@ class ControllerV4ContractTests(unittest.TestCase):
             ):
                 service_versions.append(ast.literal_eval(node.value))
 
-        self.assertEqual(service_versions, ["4.1.0-rc12"])
+        self.assertEqual(service_versions, ["4.1.0-rc13"])
+
+    def test_empty_startup_recovery_has_no_out_of_scope_cleanup(self) -> None:
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        recovery = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "recover_durable_batches_on_startup"
+        )
+        recovery_source = ast.get_source_segment(source, recovery) or ""
+
+        self.assertNotIn("COMPLETED_WITHOUT_RESUBMISSION", recovery_source)
+        self.assertNotIn("workload_type.lower()", recovery_source)
+
+    def test_fatal_startup_errors_are_logged_before_exit(self) -> None:
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'logging.exception("Fatal Label Service startup/runtime error.")',
+            source,
+        )
 
     def test_service_source_parses_and_defines_controller_pipeline(self) -> None:
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
