@@ -34,7 +34,7 @@ class ControllerV4ContractTests(unittest.TestCase):
             ):
                 service_versions.append(ast.literal_eval(node.value))
 
-        self.assertEqual(service_versions, ["4.1.0-rc11"])
+        self.assertEqual(service_versions, ["4.1.0-rc12"])
 
     def test_service_source_parses_and_defines_controller_pipeline(self) -> None:
         tree = ast.parse(SERVICE_SOURCE.read_text(encoding="utf-8"))
@@ -208,6 +208,15 @@ class ControllerV4ContractTests(unittest.TestCase):
             "FAILED batch exists - blocking retry.",
             source,
         )
+
+    def test_pending_work_routes_by_installed_media_before_preflight(self) -> None:
+        source = SERVICE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("select_pending_media_workload(", source)
+        self.assertIn("PENDING_MEDIA_ROUTE_STATUS", source)
+        self.assertIn("PENDING_MEDIA_ROUTE selected=", source)
+        self.assertIn('if selected_workload == "DISPLAY":', source)
+        self.assertIn('elif selected_workload == "CONTROLLER":', source)
 
     def test_all_renderers_pause_spooler_timeout_for_media_recovery(self) -> None:
         source = SERVICE_SOURCE.read_text(encoding="utf-8")

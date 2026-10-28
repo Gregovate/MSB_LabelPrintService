@@ -25,6 +25,10 @@ from brother_status_sampler_runtime import (
 )
 from active_print_recovery_runtime import ActivePrintMediaRecovery
 from failed_batch_routing_runtime import isolate_failed_batch_workloads
+from pending_media_routing_runtime import (
+    PendingMediaWorkload,
+    select_pending_media_workload,
+)
 from label_print_observability_runtime import LabelPrintObservability
 from v4_preflight_runtime import (
     AutomaticPreflightRecovery,
@@ -85,6 +89,13 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 # CHANGE LOG
 # ============================================================
+## 2026-10-28 — v4.1.0-rc12
+#   • FIX: Route simultaneously pending work by installed tape width
+#       - Prints compatible work instead of letting an incompatible higher-
+#         priority workload hold the shared PT-P950NW indefinitely
+#       - Keeps incompatible requests pending for normal operator/email notice
+#       - Preserves deterministic full-preflight fallback when SNMP is absent
+#
 ## 2026-10-22 — v4.1.0-rc9
 #   • FIX: Recover from transient Brother observation failures
 #       - Retries initial SNMP sampling before b-PAC submission
@@ -247,7 +258,7 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc11"
+SERVICE_VERSION = "4.1.0-rc12"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -3461,15 +3472,28 @@ def main() -> None:
                     time.sleep(POLL_SECONDS)
                     continue
 
-                if len(display_families) > 1:
+                # --------------------------------------------------
+                # Step 1c: Prefer pending work compatible with the cassette
+                # already installed. A waiting 36 mm Display must not suppress
+                # 24 mm Controller work (and vice versa). Full preflight below
+                # remains authoritative and produces the operator/email notice
+                # when no pending workload matches the installed media.
+                # --------------------------------------------------
+                unsupported_display_families = [
+                    str(row["label_template_code"])
+                    for row in display_families
+                    if str(row["label_template_code"]) not in (
+                        "QR_36MM_HORIZONTAL",
+                        "QR_24MM_HORIZONTAL",
+                    )
+                    or str(row["label_template_code"])
+                    not in LABEL_FAMILIES
+                ]
+                if unsupported_display_families:
                     family_msg = (
-                        "Multiple pending Display label families detected. "
-                        "No Display batch will be created until v4 family routing "
-                        "selects one compatible workload: "
-                        + ", ".join(
-                            f'{row["label_template_code"]}={row["pending_count"]}'
-                            for row in display_families
-                        )
+                        "Pending Display workload contains unsupported label "
+                        "families: "
+                        + ", ".join(unsupported_display_families)
                     )
                     logging.error(family_msg)
                     print(family_msg)
@@ -3478,10 +3502,107 @@ def main() -> None:
                     time.sleep(POLL_SECONDS)
                     continue
 
-                selected_display_family = (
-                    display_families[0]
-                    if display_families
-                    else None
+                pending_media_candidates: list[PendingMediaWorkload] = []
+                for row in display_families:
+                    family_code = str(row["label_template_code"])
+                    pending_media_candidates.append(
+                        PendingMediaWorkload(
+                            workload_type="DISPLAY",
+                            required_width_mm=int(
+                                LABEL_FAMILIES[family_code]["media_width_mm"]
+                            ),
+                            label_template_id=int(row["label_template_id"]),
+                            label_family_code=family_code,
+                        )
+                    )
+
+                if container_pending > 0:
+                    pending_media_candidates.append(
+                        PendingMediaWorkload(
+                            workload_type="CONTAINER",
+                            required_width_mm=int(
+                                LABEL_FAMILIES["QR_36MM_HORIZONTAL"][
+                                    "media_width_mm"
+                                ]
+                            ),
+                        )
+                    )
+
+                if controller_pending > 0:
+                    pending_media_candidates.append(
+                        PendingMediaWorkload(
+                            workload_type="CONTROLLER",
+                            required_width_mm=int(
+                                LABEL_FAMILIES[CONTROLLER_FAMILY_CODE][
+                                    "media_width_mm"
+                                ]
+                            ),
+                        )
+                    )
+
+                detected_route_width_mm = None
+                if len(pending_media_candidates) > 1:
+                    try:
+                        route_status = query_brother_snmp_status(
+                            host=LABEL_FAMILIES[CONTROLLER_FAMILY_CODE][
+                                "printer"
+                            ]["host"],
+                            oid=SNMP_OID,
+                            community=SNMP_COMMUNITY,
+                            port=SNMP_PORT,
+                            timeout=SNMP_TIMEOUT_SECONDS,
+                        )
+                        detected_route_width_mm = int(
+                            route_status.media_width_mm
+                        )
+                        logging.info(
+                            "PENDING_MEDIA_ROUTE_STATUS width=%s media=%s "
+                            "errors=%s raw=%s",
+                            route_status.media_width_mm,
+                            route_status.media_type,
+                            list(route_status.errors),
+                            route_status.raw_hex,
+                        )
+                    except Exception as route_exc:
+                        # Preserve deterministic routing to full preflight when
+                        # this advisory read is unavailable. Preflight owns the
+                        # retry/notice policy and no batch is created early.
+                        logging.warning(
+                            "PENDING_MEDIA_ROUTE_STATUS_UNAVAILABLE error=%s",
+                            route_exc,
+                        )
+
+                media_routing = select_pending_media_workload(
+                    pending_media_candidates,
+                    detected_width_mm=detected_route_width_mm,
+                )
+                selected_workload = media_routing.selected.workload_type
+                selected_display_family = None
+                if selected_workload == "DISPLAY":
+                    selected_display_family = next(
+                        row
+                        for row in display_families
+                        if int(row["label_template_id"])
+                        == media_routing.selected.label_template_id
+                    )
+
+                logging.info(
+                    "PENDING_MEDIA_ROUTE selected=%s family=%s "
+                    "required_width_mm=%s detected_width_mm=%s "
+                    "used_media_match=%s candidates=%s",
+                    selected_workload,
+                    media_routing.selected.label_family_code,
+                    media_routing.selected.required_width_mm,
+                    media_routing.detected_width_mm,
+                    media_routing.used_media_match,
+                    [
+                        (
+                            candidate.workload_type,
+                            candidate.label_family_code,
+                            candidate.required_width_mm,
+                        )
+                        for candidate in pending_media_candidates
+                    ],
                 )
 
                 # --------------------------------------------------
@@ -3493,7 +3614,7 @@ def main() -> None:
                     tuple[Path, tuple[str, ...]]
                 ] = []
 
-                if display_pending > 0:
+                if selected_workload == "DISPLAY":
                     display_plan = pending_display_preflight_plan(
                         conn,
                         int(selected_display_family["label_template_id"]),
@@ -3651,7 +3772,7 @@ def main() -> None:
                             "Container requests untouched."
                         )
 
-                elif container_pending > 0:
+                elif selected_workload == "CONTAINER":
                     container_plan = pending_container_preflight_plan(conn)
                     if int(container_plan["pending_count"]) == 0:
                         logging.warning(
@@ -3784,7 +3905,7 @@ def main() -> None:
                         time.sleep(POLL_SECONDS)
                         continue
 
-                elif controller_pending > 0:
+                elif selected_workload == "CONTROLLER":
                     controller_plan = pending_controller_preflight_plan(conn)
                     if int(controller_plan["pending_count"]) == 0:
                         logging.warning(
@@ -3890,18 +4011,18 @@ def main() -> None:
                 container_batch_id = None
                 controller_batch_id = None
 
-                if display_pending > 0:
+                if selected_workload == "DISPLAY":
                     display_batch_id = create_display_batch(
                         conn,
                         int(selected_display_family["label_template_id"]),
                         display_postflight_signature,
                     )
-                elif container_pending > 0:
+                elif selected_workload == "CONTAINER":
                     container_batch_id = create_container_batch(
                         conn,
                         container_postflight_signature,
                     )
-                elif controller_pending > 0:
+                elif selected_workload == "CONTROLLER":
                     controller_batch_id = create_controller_batch(
                         conn,
                         controller_postflight_signature,
