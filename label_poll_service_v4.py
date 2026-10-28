@@ -258,7 +258,7 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc12"
+SERVICE_VERSION = "4.1.0-rc13"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -3288,14 +3288,6 @@ def recover_durable_batches_on_startup() -> None:
             except Exception:
                 conn.rollback()
                 raise
-    OBSERVABILITY.incident_resolve(
-        conn,
-        f"failed-batch:{workload_type.lower()}:{batch_id}",
-        "COMPLETED_WITHOUT_RESUBMISSION",
-        {"service_version": SERVICE_VERSION},
-    )
-
-
 def main() -> None:
     global OBSERVABILITY
     print_banner()
@@ -4253,4 +4245,7 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         sys.exit(0)
+    except Exception:
+        logging.exception("Fatal Label Service startup/runtime error.")
+        raise
 
