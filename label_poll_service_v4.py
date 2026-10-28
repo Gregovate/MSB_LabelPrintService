@@ -25,6 +25,7 @@ from brother_status_sampler_runtime import (
 )
 from active_print_recovery_runtime import ActivePrintMediaRecovery
 from failed_batch_routing_runtime import isolate_failed_batch_workloads
+from label_print_observability_runtime import LabelPrintObservability
 from v4_preflight_runtime import (
     AutomaticPreflightRecovery,
     send_preflight_operator_notice,
@@ -246,7 +247,7 @@ from spooler_observer_runtime import SpoolerJobObserver
 # ============================================================
 
 SERVICE_NAME = "MSB Label Service"
-SERVICE_VERSION = "4.1.0-rc10"
+SERVICE_VERSION = "4.1.0-rc11"
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 HOSTNAME = socket.gethostname()
@@ -303,6 +304,20 @@ CONTROLLER_POLLING_ENABLED = CONFIG.getboolean(
     "controller_polling_enabled",
     fallback=False,
 )
+OBSERVABILITY_ENABLED = CONFIG.getboolean(
+    "features",
+    "observability_enabled",
+    fallback=False,
+)
+PREFLIGHT_EMAIL_DELAY_SECONDS = CONFIG.getint(
+    "notifications",
+    "preflight_email_delay_seconds",
+    fallback=0,
+)
+if PREFLIGHT_EMAIL_DELAY_SECONDS < 0:
+    raise RuntimeError("preflight_email_delay_seconds cannot be negative")
+
+OBSERVABILITY: LabelPrintObservability | None = None
 
 SNMP_OID = CONFIG.get(
     "printing",
@@ -452,6 +467,9 @@ LABEL_FAMILIES = {
         "WIRING_12MM_HORIZONTAL",
     )
 }
+PRINTER_PT_P950NW = LABEL_FAMILIES["QR_24MM_HORIZONTAL"]["printer"][
+    "queue_name"
+]
 
 # Accepted v4 Container physical templates.
 # Containers remain 36 mm, with orientation determined by the existing
@@ -1038,6 +1056,8 @@ def write_batch_log(batch_log_path: Path, message: str) -> None:
     with BATCH_LOG_LOCK:
         with batch_log_path.open("a", encoding="utf-8") as f:
             f.write(f"{timestamp} | {message}\n")
+    if OBSERVABILITY is not None:
+        OBSERVABILITY.observe_batch_log(batch_log_path, message)
 
 
 def new_batch_log_path(batch_type: str, batch_id: int) -> Path:
@@ -2195,6 +2215,12 @@ def print_display_rows_with_template(
         required_width_mm=int(family["media_width_mm"]),
     )
     try:
+        if OBSERVABILITY is not None:
+            OBSERVABILITY.record_explicit_batch_event(
+                batch_log_path,
+                "SUBMISSION_STARTED",
+                {"workload": workload_name, "label_count": len(rows)},
+            )
         doc.StartPrint("", PRINT_FLAGS)
         write_batch_log(
             batch_log_path,
@@ -2448,6 +2474,15 @@ def print_container_batch(
         required_width_mm=int(family["media_width_mm"]),
     )
     try:
+        if OBSERVABILITY is not None:
+            OBSERVABILITY.record_explicit_batch_event(
+                batch_log_path,
+                "SUBMISSION_STARTED",
+                {
+                    "workload": workload_name,
+                    "label_count": len(rows_to_print),
+                },
+            )
         doc.StartPrint("", PRINT_FLAGS)
         write_batch_log(
             batch_log_path,
@@ -2578,6 +2613,12 @@ def print_controller_batch(
         required_width_mm=int(family["media_width_mm"]),
     )
     try:
+        if OBSERVABILITY is not None:
+            OBSERVABILITY.record_explicit_batch_event(
+                batch_log_path,
+                "SUBMISSION_STARTED",
+                {"workload": workload_name, "label_count": len(rows)},
+            )
         doc.StartPrint("", PRINT_FLAGS)
         write_batch_log(
             batch_log_path,
@@ -2669,7 +2710,7 @@ def release_pre_submission_batch(
                     || E'\\nRETRYABLE BEFORE SUBMISSION: '
                     || %(reason)s
             WHERE b.{id_column} = %(batch_id)s
-              AND b.status = 'PRINTING'
+              AND b.status IN ('PRINTING', 'FAILED')
               AND b.batch_completed_at IS NULL
               AND NOT EXISTS (
                   SELECT 1
@@ -2686,7 +2727,7 @@ def release_pre_submission_batch(
         if cur.rowcount != 1:
             raise RuntimeError(
                 f"Could not safely release pre-submission {batch_type} "
-                f"batch {batch_id}; expected one clean PRINTING batch."
+                f"batch {batch_id}; expected one clean unreconciled batch."
             )
 
 
@@ -2849,6 +2890,7 @@ def process_display(conn, display_batch_id: int) -> None:
         load_sql("display_finalized.sql"),
         {"batch_id": display_batch_id},
     )
+    complete_batch_observability(conn, "DISPLAY", display_batch_id)
     write_batch_log(
         batch_log_path,
         "Display batch finalized successfully.",
@@ -2890,6 +2932,7 @@ def process_container(conn, container_batch_id: int) -> None:
         )
 
     exec_sql(conn, load_sql("container_finalized.sql"), {"batch_id": container_batch_id})
+    complete_batch_observability(conn, "CONTAINER", container_batch_id)
     write_batch_log(batch_log_path, "Container batch finalized successfully.")
     logging.info("Container batch %s completed successfully.", container_batch_id)
 
@@ -2923,6 +2966,7 @@ def process_controller(conn, controller_batch_id: int) -> None:
         load_sql("controller_finalized.sql"),
         {"batch_id": controller_batch_id},
     )
+    complete_batch_observability(conn, "CONTROLLER", controller_batch_id)
     write_batch_log(
         batch_log_path,
         "Controller batch finalized successfully.",
@@ -2937,11 +2981,329 @@ def process_controller(conn, controller_batch_id: int) -> None:
 # MAIN LOOP
 # ============================================================
 
+def _workload_type_from_name(workload_name: str) -> str:
+    normalized = workload_name.upper()
+    if normalized.startswith("DISPLAY"):
+        return "DISPLAY"
+    if normalized.startswith("CONTAINER"):
+        return "CONTAINER"
+    if normalized.startswith("CONTROLLER"):
+        return "CONTROLLER"
+    return "SYSTEM"
+
+
+def _preflight_incident_key(workload_name: str) -> str:
+    workload = _workload_type_from_name(workload_name).lower()
+    return f"preflight:{HOSTNAME}:{workload}"
+
+
+def record_preflight_wait(
+    workload_name: str,
+    reason: str,
+    attempts: int,
+    wait_seconds: float,
+) -> None:
+    if OBSERVABILITY is None or not OBSERVABILITY.enabled:
+        return
+    workload = _workload_type_from_name(workload_name)
+    with db_connect() as conn:
+        pending_sql = {
+            "DISPLAY": "SELECT count(*) FROM ref.display WHERE print_label",
+            "CONTAINER": "SELECT count(*) FROM ref.container WHERE print_label",
+            "CONTROLLER": "SELECT count(*) FROM ref.controller WHERE print_label",
+        }.get(workload)
+        pending_count = int(query_value(conn, pending_sql) or 0) if pending_sql else 0
+        OBSERVABILITY.incident_upsert(
+            conn,
+            incident_key=_preflight_incident_key(workload_name),
+            incident_kind="PREFLIGHT_MEDIA",
+            workload_type=workload,
+            printer_name=PRINTER_PT_P950NW,
+            batch_id=None,
+            pending_count=pending_count,
+            severity="WARNING",
+            alert_delay_seconds=PREFLIGHT_EMAIL_DELAY_SECONDS,
+            operator_action=reason,
+            recovery_state="WAITING_FOR_CORRECT_MEDIA",
+            details={
+                "workload_name": workload_name,
+                "reason": reason,
+                "attempts": attempts,
+                "wait_seconds": round(wait_seconds, 1),
+                "automatic_recheck": True,
+            },
+        )
+        conn.commit()
+
+
+def record_preflight_recovered(
+    workload_name: str,
+    attempts: int,
+    wait_seconds: float,
+    detail: str,
+) -> None:
+    if OBSERVABILITY is None or not OBSERVABILITY.enabled:
+        return
+    with db_connect() as conn:
+        OBSERVABILITY.incident_resolve(
+            conn,
+            _preflight_incident_key(workload_name),
+            "AUTOMATIC_PREFLIGHT_RECOVERY",
+            {
+                "attempts": attempts,
+                "wait_seconds": round(wait_seconds, 1),
+                "detail": detail,
+            },
+        )
+        conn.commit()
+
+
+def safe_service_heartbeat(state: str, **details: Any) -> None:
+    if OBSERVABILITY is None or not OBSERVABILITY.enabled:
+        return
+    try:
+        OBSERVABILITY.heartbeat(state, details)
+    except Exception:
+        logging.exception("LABEL_PRINT_HEARTBEAT_FAILED state=%s", state)
+
+
+def bind_and_checkpoint_batch(
+    conn,
+    workload_type: str,
+    batch_id: int | None,
+) -> None:
+    if batch_id is None or OBSERVABILITY is None or not OBSERVABILITY.enabled:
+        return
+    bound = OBSERVABILITY.bind_batch_requests(conn, workload_type, batch_id)
+    OBSERVABILITY.checkpoint_in_transaction(
+        conn,
+        workload_type,
+        batch_id,
+        "BATCH_CREATED",
+        {"bound_request_count": bound, "service_version": SERVICE_VERSION},
+    )
+
+
+def record_failed_batch_incident(
+    conn,
+    *,
+    workload_type: str,
+    batch_id: int,
+    pending_count: int,
+    reason: str,
+) -> None:
+    if OBSERVABILITY is None or not OBSERVABILITY.enabled:
+        return
+    OBSERVABILITY.incident_upsert(
+        conn,
+        incident_key=f"failed-batch:{workload_type.lower()}:{batch_id}",
+        incident_kind="FAILED_BATCH",
+        workload_type=workload_type,
+        printer_name=PRINTER_PT_P950NW,
+        batch_id=batch_id,
+        pending_count=pending_count,
+        severity="ERROR",
+        alert_delay_seconds=0,
+        operator_action=(
+            "The job is retained for automatic recovery or engineering "
+            "reconciliation. Do not submit the labels again."
+        ),
+        recovery_state="RECONCILIATION_REQUIRED",
+        details={
+            "failure_reason": reason,
+            "service_version": SERVICE_VERSION,
+        },
+    )
+
+
+def record_existing_failed_batches(
+    *,
+    failed_display_batch_id: int | None,
+    failed_container_batch_id: int | None,
+    failed_controller_batch_id: int | None,
+    display_pending: int,
+    container_pending: int,
+    controller_pending: int,
+) -> None:
+    if OBSERVABILITY is None or not OBSERVABILITY.enabled:
+        return
+    failed = (
+        ("DISPLAY", failed_display_batch_id, display_pending),
+        ("CONTAINER", failed_container_batch_id, container_pending),
+        ("CONTROLLER", failed_controller_batch_id, controller_pending),
+    )
+    with db_connect() as incident_conn:
+        for workload_type, batch_id, pending_count in failed:
+            if batch_id is None:
+                continue
+            record_failed_batch_incident(
+                incident_conn,
+                workload_type=workload_type,
+                batch_id=batch_id,
+                pending_count=pending_count,
+                reason="An unreconciled FAILED batch is blocking this workload.",
+            )
+        incident_conn.commit()
+
+
+def complete_batch_observability(
+    conn,
+    workload_type: str,
+    batch_id: int,
+) -> None:
+    if OBSERVABILITY is None or not OBSERVABILITY.enabled:
+        return
+    OBSERVABILITY.checkpoint_in_transaction(
+        conn,
+        workload_type,
+        batch_id,
+        "COMPLETED",
+        {"service_version": SERVICE_VERSION},
+    )
+    queued_success_events = OBSERVABILITY.queue_success_events(
+        conn, workload_type, batch_id
+    )
+    logging.info(
+        "LABEL_PRINT_SUCCESS_NOTIFICATIONS_QUEUED workload=%s batch_id=%s "
+        "events=%s",
+        workload_type,
+        batch_id,
+        queued_success_events,
+    )
+
+
+def recover_durable_batches_on_startup() -> None:
+    """Apply only recovery decisions proven safe by durable evidence."""
+    if OBSERVABILITY is None or not OBSERVABILITY.enabled:
+        return
+    finalizer_files = {
+        "DISPLAY": "display_finalized.sql",
+        "CONTAINER": "container_finalized.sql",
+        "CONTROLLER": "controller_finalized.sql",
+    }
+    with db_connect() as conn:
+        conn.autocommit = False
+        candidates = OBSERVABILITY.recovery_candidates(conn)
+        conn.rollback()
+        for candidate in candidates:
+            workload = str(candidate["workload_type"]).upper()
+            batch_id = int(candidate["batch_id"])
+            try:
+                if (
+                    candidate["recovery_state"] == "PRE_SUBMISSION"
+                    and not candidate["submission_started"]
+                ):
+                    release_pre_submission_batch(
+                        conn,
+                        batch_type=workload.lower(),
+                        batch_id=batch_id,
+                        reason=(
+                            "Startup recovery proved that no physical print "
+                            "submission began."
+                        ),
+                    )
+                    OBSERVABILITY.release_batch_requests(
+                        conn, workload, batch_id
+                    )
+                    OBSERVABILITY.checkpoint_in_transaction(
+                        conn,
+                        workload,
+                        batch_id,
+                        "RELEASED_NO_SUBMISSION",
+                        {"outcome": "RETRYABLE_NO_SUBMISSION"},
+                    )
+                    OBSERVABILITY.incident_resolve(
+                        conn,
+                        f"recovery:{workload.lower()}:{batch_id}",
+                        "AUTOMATIC_RETRY_RELEASED",
+                        {"service_version": SERVICE_VERSION},
+                    )
+                    conn.commit()
+                    logging.warning(
+                        "STARTUP_RECOVERY_RELEASED workload=%s batch_id=%s",
+                        workload,
+                        batch_id,
+                    )
+                    continue
+
+                if (
+                    candidate["spooler_cleared"]
+                    and candidate["ready_idle_observed"]
+                    and candidate["recovery_state"]
+                    in {"VERIFYING_COMPLETION", "RECONCILIATION_REQUIRED"}
+                ):
+                    exec_sql(
+                        conn,
+                        load_sql(finalizer_files[workload]),
+                        {"batch_id": batch_id},
+                    )
+                    complete_batch_observability(conn, workload, batch_id)
+                    OBSERVABILITY.incident_resolve(
+                        conn,
+                        f"recovery:{workload.lower()}:{batch_id}",
+                        "COMPLETED_FROM_DURABLE_EVIDENCE",
+                        {"service_version": SERVICE_VERSION},
+                    )
+                    conn.commit()
+                    logging.warning(
+                        "STARTUP_RECOVERY_FINALIZED workload=%s batch_id=%s",
+                        workload,
+                        batch_id,
+                    )
+                    continue
+
+                OBSERVABILITY.incident_upsert(
+                    conn,
+                    incident_key=f"recovery:{workload.lower()}:{batch_id}",
+                    incident_kind="OBSERVATION",
+                    workload_type=workload,
+                    printer_name=PRINTER_PT_P950NW,
+                    batch_id=batch_id,
+                    pending_count=0,
+                    severity="ERROR",
+                    alert_delay_seconds=0,
+                    operator_action=(
+                        "Physical completion is uncertain. The request is "
+                        "held and must not be resubmitted."
+                    ),
+                    recovery_state="RECONCILIATION_REQUIRED",
+                    details={
+                        "last_event": candidate["last_event"],
+                        "durable_recovery_state": candidate["recovery_state"],
+                        "service_version": SERVICE_VERSION,
+                    },
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+    OBSERVABILITY.incident_resolve(
+        conn,
+        f"failed-batch:{workload_type.lower()}:{batch_id}",
+        "COMPLETED_WITHOUT_RESUBMISSION",
+        {"service_version": SERVICE_VERSION},
+    )
+
+
 def main() -> None:
+    global OBSERVABILITY
     print_banner()
 
     startup_health_check()
-    preflight_recovery = AutomaticPreflightRecovery()
+    OBSERVABILITY = LabelPrintObservability(
+        enabled=OBSERVABILITY_ENABLED,
+        connect_database=db_connect,
+        service_version=SERVICE_VERSION,
+        process_id=int(PROCESS_ID),
+        host_name=HOSTNAME,
+    )
+    OBSERVABILITY.verify_contract()
+    recover_durable_batches_on_startup()
+    safe_service_heartbeat("STARTING", controller_polling_enabled=CONTROLLER_POLLING_ENABLED)
+    preflight_recovery = AutomaticPreflightRecovery(
+        on_wait=record_preflight_wait,
+        on_recovered=record_preflight_recovered,
+    )
 
     while True:
         try:
@@ -2981,6 +3343,17 @@ def main() -> None:
                         for row in display_families
                     ],
                     CONTROLLER_POLLING_ENABLED,
+                )
+
+                safe_service_heartbeat(
+                    "IDLE" if (
+                        display_pending == 0
+                        and container_pending == 0
+                        and controller_pending == 0
+                    ) else "BUSY",
+                    pending_displays=display_pending,
+                    pending_containers=container_pending,
+                    pending_controllers=controller_pending,
                 )
 
                 if (
@@ -3060,6 +3433,14 @@ def main() -> None:
                         f"container_batch_id={failed_container_batch_id} "
                         f"controller_batch_id={failed_controller_batch_id}"
                     )
+                    record_existing_failed_batches(
+                        failed_display_batch_id=failed_display_batch_id,
+                        failed_container_batch_id=failed_container_batch_id,
+                        failed_controller_batch_id=failed_controller_batch_id,
+                        display_pending=display_pending,
+                        container_pending=container_pending,
+                        controller_pending=controller_pending,
+                    )
 
                 display_pending = routing.display_pending
                 container_pending = routing.container_pending
@@ -3069,6 +3450,12 @@ def main() -> None:
                     display_families = []
 
                 if routing.all_pending_work_blocked:
+                    safe_service_heartbeat(
+                        "BLOCKED",
+                        failed_display_batch_id=failed_display_batch_id,
+                        failed_container_batch_id=failed_container_batch_id,
+                        failed_controller_batch_id=failed_controller_batch_id,
+                    )
                     conn.rollback()
                     clear_lock()
                     time.sleep(POLL_SECONDS)
@@ -3539,6 +3926,16 @@ def main() -> None:
                     time.sleep(POLL_SECONDS)
                     continue
 
+                bind_and_checkpoint_batch(
+                    conn, "DISPLAY", display_batch_id
+                )
+                bind_and_checkpoint_batch(
+                    conn, "CONTAINER", container_batch_id
+                )
+                bind_and_checkpoint_batch(
+                    conn, "CONTROLLER", controller_batch_id
+                )
+
                 # --------------------------------------------------
                 # Commit batch header + items BEFORE physical printing
                 # so failed batches remain in the database and can be
@@ -3592,6 +3989,15 @@ def main() -> None:
                                 batch_id=display_batch_id,
                                 reason=str(batch_exc),
                             )
+                            if OBSERVABILITY is not None:
+                                OBSERVABILITY.release_batch_requests(
+                                    conn, "DISPLAY", display_batch_id
+                                )
+                                OBSERVABILITY.checkpoint_in_transaction(
+                                    conn, "DISPLAY", display_batch_id,
+                                    "RELEASED_NO_SUBMISSION",
+                                    {"outcome": "RETRYABLE_NO_SUBMISSION"},
+                                )
                         if container_batch_id:
                             release_pre_submission_batch(
                                 conn,
@@ -3599,6 +4005,15 @@ def main() -> None:
                                 batch_id=container_batch_id,
                                 reason=str(batch_exc),
                             )
+                            if OBSERVABILITY is not None:
+                                OBSERVABILITY.release_batch_requests(
+                                    conn, "CONTAINER", container_batch_id
+                                )
+                                OBSERVABILITY.checkpoint_in_transaction(
+                                    conn, "CONTAINER", container_batch_id,
+                                    "RELEASED_NO_SUBMISSION",
+                                    {"outcome": "RETRYABLE_NO_SUBMISSION"},
+                                )
                         if controller_batch_id:
                             release_pre_submission_batch(
                                 conn,
@@ -3606,6 +4021,15 @@ def main() -> None:
                                 batch_id=controller_batch_id,
                                 reason=str(batch_exc),
                             )
+                            if OBSERVABILITY is not None:
+                                OBSERVABILITY.release_batch_requests(
+                                    conn, "CONTROLLER", controller_batch_id
+                                )
+                                OBSERVABILITY.checkpoint_in_transaction(
+                                    conn, "CONTROLLER", controller_batch_id,
+                                    "RELEASED_NO_SUBMISSION",
+                                    {"outcome": "RETRYABLE_NO_SUBMISSION"},
+                                )
 
                         logging.warning(
                             "PRE_SUBMISSION_BATCH_RELEASED "
@@ -3633,6 +4057,13 @@ def main() -> None:
                                 display_batch_id,
                                 str(batch_exc),
                             )
+                            record_failed_batch_incident(
+                                conn,
+                                workload_type="DISPLAY",
+                                batch_id=display_batch_id,
+                                pending_count=display_pending,
+                                reason=str(batch_exc),
+                            )
 
                         if container_batch_id:
                             mark_container_batch_failed(
@@ -3640,12 +4071,26 @@ def main() -> None:
                                 container_batch_id,
                                 str(batch_exc),
                             )
+                            record_failed_batch_incident(
+                                conn,
+                                workload_type="CONTAINER",
+                                batch_id=container_batch_id,
+                                pending_count=container_pending,
+                                reason=str(batch_exc),
+                            )
 
                         if controller_batch_id:
                             mark_controller_batch_failed(
                                 conn,
                                 controller_batch_id,
                                 str(batch_exc),
+                            )
+                            record_failed_batch_incident(
+                                conn,
+                                workload_type="CONTROLLER",
+                                batch_id=controller_batch_id,
+                                pending_count=controller_pending,
+                                reason=str(batch_exc),
                             )
 
                     conn.commit()
