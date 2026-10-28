@@ -7,7 +7,10 @@ import time
 import unittest
 
 from brother_status_runtime import BrotherStatus, decode_brother_status
-from brother_status_sampler_runtime import BrotherStatusSampler
+from brother_status_sampler_runtime import (
+    BrotherStatusSampler,
+    PreSubmissionObservationError,
+)
 
 
 READY_STATUS = bytes.fromhex(
@@ -27,6 +30,12 @@ END_OF_MEDIA_STATUS = bytes(END_OF_MEDIA_STATUS)
 WRONG_WIDTH_STATUS = bytearray(ACTIVE_STATUS)
 WRONG_WIDTH_STATUS[10] = 36
 WRONG_WIDTH_STATUS = bytes(WRONG_WIDTH_STATUS)
+
+COMMUNICATION_ERROR_STATUS = bytearray(ACTIVE_STATUS)
+COMMUNICATION_ERROR_STATUS[9] = 0x04
+COMMUNICATION_ERROR_STATUS[18] = 0x02
+COMMUNICATION_ERROR_STATUS[19] = 0x00
+COMMUNICATION_ERROR_STATUS = bytes(COMMUNICATION_ERROR_STATUS)
 
 
 def changed_status() -> BrotherStatus:
@@ -103,7 +112,7 @@ class BrotherStatusSamplerTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(
-            RuntimeError,
+            PreSubmissionObservationError,
             "failed before print submission",
         ):
             sampler.start()
@@ -111,6 +120,29 @@ class BrotherStatusSamplerTests(unittest.TestCase):
         self.assertTrue(
             any("BROTHER_STATUS_SAMPLE_ERROR" in item for item in messages)
         )
+
+    def test_retries_transient_initial_status_failure_before_submission(self) -> None:
+        ready = decode_brother_status(READY_STATUS)
+        sequence = SequencedStatus([TimeoutError("temporary SNMP"), ready])
+        messages: list[str] = []
+        sampler = BrotherStatusSampler(
+            context="initial retry",
+            read_status=sequence,
+            log_message=messages.append,
+            poll_interval_seconds=0.001,
+            heartbeat_seconds=0.05,
+            startup_timeout_seconds=0.1,
+            startup_attempts=3,
+            stop_timeout_seconds=0.1,
+        )
+
+        sampler.start()
+        sampler.stop()
+
+        self.assertTrue(
+            any("SAMPLER_STARTUP_RETRY" in item for item in messages)
+        )
+        self.assertTrue(any("event=INITIAL" in item for item in messages))
 
     def test_runtime_error_is_logged_and_sampling_recovers(self) -> None:
         ready = decode_brother_status(READY_STATUS)
@@ -125,6 +157,7 @@ class BrotherStatusSamplerTests(unittest.TestCase):
             poll_interval_seconds=0.001,
             heartbeat_seconds=0.05,
             startup_timeout_seconds=0.1,
+            terminal_error_confirm_seconds=0,
             stop_timeout_seconds=0.1,
         )
 
@@ -149,6 +182,7 @@ class BrotherStatusSamplerTests(unittest.TestCase):
             poll_interval_seconds=0.001,
             heartbeat_seconds=0.05,
             startup_timeout_seconds=0.1,
+            terminal_error_confirm_seconds=0,
             stop_timeout_seconds=0.1,
         )
 
@@ -167,6 +201,56 @@ class BrotherStatusSamplerTests(unittest.TestCase):
             )
         )
 
+    def test_one_sample_communication_error_is_not_terminal(self) -> None:
+        ready = decode_brother_status(READY_STATUS)
+        active = decode_brother_status(ACTIVE_STATUS)
+        communication_error = decode_brother_status(
+            COMMUNICATION_ERROR_STATUS
+        )
+        source = MutableStatus(ready)
+        messages: list[str] = []
+        sampler = BrotherStatusSampler(
+            context="transient communication transition",
+            read_status=source,
+            log_message=messages.append,
+            poll_interval_seconds=0.001,
+            heartbeat_seconds=0.05,
+            startup_timeout_seconds=0.1,
+            terminal_error_confirm_seconds=0.02,
+            stop_timeout_seconds=0.1,
+        )
+
+        sampler.start()
+        source.status = active
+
+        def transient_error() -> None:
+            time.sleep(0.003)
+            source.status = communication_error
+            time.sleep(0.003)
+            source.status = ready
+
+        transition = threading.Thread(target=transient_error)
+        transition.start()
+        try:
+            observation = sampler.wait_for_physical_completion(
+                timeout_seconds=0.1,
+                idle_stable_seconds=0.004,
+            )
+        finally:
+            transition.join()
+            sampler.stop()
+
+        self.assertEqual(observation.outcome, "READY_IDLE")
+        self.assertTrue(
+            any("PHYSICAL_ERROR_CONFIRMING" in item for item in messages)
+        )
+        self.assertTrue(
+            any("PHYSICAL_ERROR_CLEARED" in item for item in messages)
+        )
+        self.assertFalse(
+            any("outcome=ERROR" in item for item in messages)
+        )
+
     def test_captures_end_of_media_after_spooler_clears(self) -> None:
         ready = decode_brother_status(READY_STATUS)
         active = decode_brother_status(ACTIVE_STATUS)
@@ -180,6 +264,7 @@ class BrotherStatusSamplerTests(unittest.TestCase):
             poll_interval_seconds=0.001,
             heartbeat_seconds=0.05,
             startup_timeout_seconds=0.1,
+            terminal_error_confirm_seconds=0,
             stop_timeout_seconds=0.1,
         )
 
@@ -209,6 +294,7 @@ class BrotherStatusSamplerTests(unittest.TestCase):
             poll_interval_seconds=0.05,
             heartbeat_seconds=1.0,
             startup_timeout_seconds=0.1,
+            terminal_error_confirm_seconds=0,
             stop_timeout_seconds=0.1,
         )
 
@@ -235,6 +321,7 @@ class BrotherStatusSamplerTests(unittest.TestCase):
             poll_interval_seconds=0.001,
             heartbeat_seconds=0.05,
             startup_timeout_seconds=0.1,
+            terminal_error_confirm_seconds=0,
             stop_timeout_seconds=0.1,
         )
 

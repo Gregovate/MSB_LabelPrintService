@@ -63,7 +63,7 @@ class ActivePrintRecoveryTests(unittest.TestCase):
         clock = FakeClock()
         messages: list[str] = []
         notices: list[str] = []
-        delivery_results = iter([False, True])
+        delivery_results = iter([False, True, True])
         recovery = ActivePrintMediaRecovery(
             workload_name="Container labels (36 mm, HORIZONTAL)",
             required_width_mm=36,
@@ -87,9 +87,45 @@ class ActivePrintRecoveryTests(unittest.TestCase):
         self.assertIsNotNone(recovery.observe_status(end_of_media))
         self.assertEqual(len(notices), 2)
 
-        self.assertIsNone(
-            recovery.observe_status(decode_brother_status(READY_36))
+        waiting_for_resume = recovery.observe_status(
+            decode_brother_status(READY_36)
         )
+        self.assertIsNotNone(waiting_for_resume)
+        self.assertIn("has not resumed", waiting_for_resume or "")
+
+        active = changed_status(**{"19": 0x01})
+        self.assertIsNone(recovery.observe_status(active))
+        self.assertTrue(
+            any("ACTIVE_PRINT_MEDIA_RECOVERED" in item for item in messages)
+        )
+
+    def test_communication_error_waits_for_retained_job_resume(self) -> None:
+        messages: list[str] = []
+        notices: list[str] = []
+        recovery = ActivePrintMediaRecovery(
+            workload_name="Display labels (36 mm)",
+            required_width_mm=36,
+            log_message=messages.append,
+            log_event=lambda _message: None,
+            notify_operator=lambda _workload, reason: (
+                notices.append(reason) or True
+            ),
+        )
+        communication_error = changed_status(**{"9": 0x04, "18": 0x02})
+
+        reason = recovery.observe_status(
+            communication_error,
+            include_transport_errors=True,
+        )
+        self.assertIsNotNone(reason)
+        self.assertIn("communication error", (reason or "").lower())
+
+        waiting = recovery.observe_status(decode_brother_status(READY_36))
+        self.assertIsNotNone(waiting)
+        self.assertIn("has not resumed", waiting or "")
+
+        active = changed_status(**{"19": 0x01})
+        self.assertIsNone(recovery.observe_status(active))
         self.assertTrue(
             any("ACTIVE_PRINT_MEDIA_RECOVERED" in item for item in messages)
         )

@@ -4,22 +4,32 @@ The MSB Label Print Service is the Windows-side printing subsystem that converts
 
 ## Current State
 
-**Status: V4 OPERATIONAL / CONTROLLER CONSUMER ACCEPTED / RC5 ACTIVE-TAPE-OUT RECOVERY CANDIDATE IN ENGINEERING**
+**Status: V4 OPERATIONAL / RC8 IN PRODUCTION / RC9 TRANSIENT-OBSERVATION RECOVERY CANDIDATE**
 
 Current source baseline:
 
 ```text
 Repository: Gregovate/MSB_LabelPrintService
-Production/main baseline: b76bfa18119b596d53294456efdb5c1d03af0e19
-Engineering branch: fix/active-tapeout-same-batch-recovery
+Production/main baseline: 5a7cf8375cf68aedf5328a2e2c6afee8cc424300
+Engineering branch: fix/post-spooler-transient-recovery
 Production service source: label_poll_service_v4.py
-Production version before this candidate: 4.1.0-rc4
-Current engineering candidate: 4.1.0-rc5
-Reviewed rc5 runtime commit: d4c29e8613f38837a16bece9b9056e0c2ff62dac
+Production version before this candidate: 4.1.0-rc8
+Current engineering candidate: 4.1.0-rc10
+Reviewed rc10 runtime commit: 3f9eabbbff4fffba8d5d78871b0bb7d6d533e783
 ```
 
 V3.4 remains the preserved rollback path and must never run concurrently with
 V4.
+
+Rc9 addresses two production failures that previously required direct database
+cleanup. Initial Brother sampler timeouts are retried before submission; if
+observation still cannot start, the frozen snapshot is retired as `RETRYABLE`
+and the original requests remain pending. After spooler clearing, Brother error
+packets must remain present in consecutive fresh samples before they control the
+batch. A confirmed communication error holds the same batch open, alerts the
+active console, and waits for the retained printer job to become active again
+before successful finalization. It never blindly resubmits an ambiguous
+post-submission batch.
 
 ## Production Host
 
@@ -261,6 +271,23 @@ The worker must remain running so it can preserve the observed-job context;
 stopping it during an active retained job remains an exceptional recovery case.
 
 Do not weaken the failed-batch, queue, spooler-verification, transaction, or retry safeguards during recovery work.
+
+## Workload-Specific Failed-Batch Isolation (rc10)
+
+The October 27 production incident proved that the previous durable-failure
+guard was too broad. A stale false-failure in Display batch 391 blocked five
+unrelated Controller requests until the Display batch was manually reconciled.
+
+Candidate `4.1.0-rc10` keeps the no-repeat guarantee but scopes it to the
+workload that owns the unresolved failed batch. A failed Display batch freezes
+Display requests only; eligible Container and Controller requests may continue
+after the existing global active-batch and printer-queue safeguards pass. The
+same rule applies symmetrically to Container and Controller failures. When all
+pending work belongs to failed workloads, the worker remains safely idle.
+
+This is recovery isolation, not automatic reconciliation. Ambiguous physical
+completion still requires the governed reconciliation path and must never cause
+a blind replay.
 
 ## Safety Boundaries
 

@@ -109,17 +109,46 @@ class ActivePrintMediaRecovery:
         self._started_at: float | None = None
         self._last_notice_at: float | None = None
         self._notice_delivered = False
+        self._resume_required = False
 
-    def observe_status(self, status: BrotherStatus | None) -> str | None:
+    def observe_status(
+        self,
+        status: BrotherStatus | None,
+        *,
+        include_transport_errors: bool = False,
+    ) -> str | None:
         """Return the current pause reason and maintain operator notice state."""
         if status is None:
             return self._reason
 
-        reason = recoverable_media_reason(
-            status,
-            required_width_mm=self.required_width_mm,
-        )
+        if include_transport_errors and "Communication error" in status.errors:
+            detected_reason = (
+                "The Brother printer reported a communication error during "
+                "an active print job. The Label Service is keeping this same "
+                "batch open and will resume automatically if the retained "
+                "printer job continues. Do not request the labels again or "
+                "reboot the print server."
+            )
+        else:
+            detected_reason = recoverable_media_reason(
+                status,
+                required_width_mm=self.required_width_mm,
+            )
         now = self.monotonic()
+
+        if detected_reason is not None:
+            self._resume_required = True
+            reason = detected_reason
+        elif self._resume_required and status.phase_type_code == 0x00:
+            reason = (
+                "The printer condition cleared, but the retained Brother job "
+                "has not resumed physical printing yet. Keep the correct "
+                f"{self.required_width_mm} mm laminated tape installed. The "
+                "Label Service will continue watching this same batch; do not "
+                "request the labels again or reboot the print server."
+            )
+        else:
+            reason = None
 
         if reason is None:
             if self._reason is not None:
@@ -137,6 +166,7 @@ class ActivePrintMediaRecovery:
                 self._started_at = None
                 self._last_notice_at = None
                 self._notice_delivered = False
+                self._resume_required = False
             return None
 
         if self._reason is None:

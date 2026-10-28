@@ -254,6 +254,53 @@ batch log, Windows queue state, pending request IDs, and non-completed batch
 state. Follow the current failed-batch/runtime recovery SOP before stopping or
 restarting the worker.
 
+## Communication Error Recovery (rc9)
+
+Candidate `4.1.0-rc9` no longer turns one sampled Brother communication-error
+packet into an immediate FAILED database blocker.
+
+Normal behavior is:
+
+1. The service logs `BROTHER_STATUS_PHYSICAL_ERROR_CONFIRMING`.
+2. If the next fresh status samples are healthy, it logs
+   `BROTHER_STATUS_PHYSICAL_ERROR_CLEARED` and continues normally.
+3. If the communication error remains confirmed, the service keeps the same
+   batch open, pauses its physical-completion timeout, and sends a visible
+   PRINT-SERVER notice.
+4. Do not request the labels again and do not reboot the print server.
+5. If the retained Brother job becomes active again, the service observes that
+   activity, waits for stable ready/idle, finalizes the original batch once,
+   and resumes later pending work automatically.
+
+The service deliberately does not re-submit a post-spooler batch merely because
+communication later returns. At that point physical output can be ambiguous,
+and full-batch replay could duplicate labels. If the same worker does not
+observe retained-job activity, preserve the logs and follow the governed
+failed-batch recovery procedure. Direct PostgreSQL deletion is not a normal
+operator step.
+
+Initial sampler failures occur before any b-PAC submission and are different.
+Rc9 retries the initial status read. If every attempt fails, the service marks
+that clean snapshot `RETRYABLE`, leaves the source requests pending, and tries
+again on a later poll without creating a blocking FAILED batch.
+
+## Unrelated Work During a Failed Batch (rc10)
+
+An unresolved failed batch is still a hard stop for that workload type, because
+its physical completion may be ambiguous. It is no longer a global stop for
+the other label types:
+
+- failed Display batch: hold Displays; Containers and Controllers may proceed;
+- failed Container batch: hold Containers; Displays and Controllers may proceed;
+- failed Controller batch: hold Controllers; Displays and Containers may proceed.
+
+The active-`PRINTING`-batch and non-empty-printer-queue guards remain global.
+Operators must not delete or alter the failed batch to release unrelated work.
+The service logs the blocked and eligible workload sets on every bounded poll.
+Automatic email incident delivery is a separate Server Management integration;
+until that integration is deployed, the durable batch and service logs remain
+the authoritative failure record.
+
 ## What Staff Should Report After Tape-Out
 
 When tape runs out during a real batch, report at minimum:
@@ -315,5 +362,7 @@ worker remains in Session 0.
 
 | Date | Change |
 |---|---|
+| 2026-10-27 | Added rc10 workload-specific failed-batch isolation after stale Display batch 391 blocked five unrelated Controller requests. |
+| 2026-10-22 | Added rc9 initial-sampler retry, confirmed-error filtering, same-batch communication recovery, and the no-blind-resubmission boundary from Display batches 387 and 390. |
 | 2026-09-15 | Recorded Container batch 348 natural 36 mm tape-out, rc4 spooler-timeout failure, Brother retained-job replay after cassette replacement, and rc5 same-batch automatic-recovery procedure. |
 | 2026-09-08 | Added rc4 automatic preflight recovery, active-console notice, and physical-terminal sampling procedure. |
